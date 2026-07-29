@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuickDice, type Roll } from './quickDiceStore';
 import { useDiceEffects } from './diceEffectsStore';
-import { playDiceRoll } from './diceSound';
+import { playDiceRoll, playCritSound } from './diceSound';
 
 /**
  * Centre-screen roll flourish.
@@ -86,6 +86,33 @@ export default function DiceRollOverlay() {
     return () => clearTimeout(t);
   }, [roll, phase]);
 
+  // Crit fanfare fires on the reveal, not on the throw — the point is the
+  // payoff landing, and playing it up front would spoil the tumble.
+  useEffect(() => {
+    if (!roll || phase !== 'settle' || roll.crit !== 'hit' || !sound) return;
+    playCritSound();
+  }, [roll, phase, sound]);
+
+  // Spark trajectories are fixed per roll so re-renders during the hold don't
+  // re-scatter them mid-flight. Offsets are in px, applied via CSS custom
+  // properties (see .dice-spark in index.css).
+  const sparks = useMemo(() => {
+    if (!roll || roll.crit !== 'hit') return [];
+    const N = 18;
+    return Array.from({ length: N }, (_, i) => {
+      const angle = (i / N) * Math.PI * 2 + Math.random() * 0.35;
+      const dist = 60 + Math.random() * 42;
+      const size = 3.5 + Math.random() * 3.5;
+      return {
+        dx: `${(Math.cos(angle) * dist).toFixed(1)}px`,
+        dy: `${(Math.sin(angle) * dist).toFixed(1)}px`,
+        delay: `${(Math.random() * 0.07).toFixed(3)}s`,
+        dur: `${(0.62 + Math.random() * 0.3).toFixed(2)}s`,
+        size: `${size.toFixed(1)}px`,
+      };
+    });
+  }, [roll]);
+
   useEffect(() => {
     if (!roll || phase !== 'out') return;
     const t = setTimeout(() => setRoll(null), FADE_MS);
@@ -97,9 +124,11 @@ export default function DiceRollOverlay() {
   const settled = phase !== 'tumble';
   const shown = settled ? roll.total : face;
 
-  // Crits recolour the whole flourish; everything else rides the theme accent.
+  // Crits recolour the whole flourish — but only once the die has settled, so
+  // the result is a reveal rather than something the tumble gives away.
   const accent =
-    roll.crit === 'hit' ? '#fbbf24'
+    !settled ? 'var(--ac-400)'
+    : roll.crit === 'hit' ? '#fbbf24'
     : roll.crit === 'miss' ? '#f43f5e'
     : 'var(--ac-400)';
 
@@ -117,12 +146,33 @@ export default function DiceRollOverlay() {
           transition: `opacity ${FADE_MS}ms ease-out, transform 260ms cubic-bezier(.2,1.4,.4,1)`,
         }}
       >
+        <div className="relative">
+          {/* Critical-hit sparks — one-shot burst on the reveal. Siblings of
+              the SVG so they can travel past its bounds without clipping. */}
+          {settled &&
+            sparks.map((s, i) => (
+              <span
+                key={i}
+                className="dice-spark"
+                style={
+                  {
+                    width: s.size,
+                    height: s.size,
+                    '--dx': s.dx,
+                    '--dy': s.dy,
+                    '--dur': s.dur,
+                    '--delay': s.delay,
+                  } as React.CSSProperties
+                }
+              />
+            ))}
         <svg width={148} height={148} viewBox="0 0 100 100" aria-hidden>
           {/* Soft halo so the shape reads over a busy map */}
           <polygon
             points={polygonPoints(sidesForDie(roll.die), 40)}
             fill="rgb(2 6 23 / 0.82)"
           />
+
           <polygon
             points={polygonPoints(sidesForDie(roll.die), 40)}
             fill="none"
@@ -132,7 +182,7 @@ export default function DiceRollOverlay() {
             style={{
               transformOrigin: '50px 50px',
               transform: `rotate(${settled ? 0 : 12}deg)`,
-              transition: 'transform 320ms cubic-bezier(.2,1.4,.4,1)',
+              transition: 'transform 320ms cubic-bezier(.2,1.4,.4,1), stroke 200ms ease-out',
             }}
           />
           <text
@@ -151,6 +201,7 @@ export default function DiceRollOverlay() {
             {shown}
           </text>
         </svg>
+        </div>
 
         <div
           className="text-center"

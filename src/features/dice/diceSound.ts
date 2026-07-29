@@ -72,3 +72,35 @@ export function playDiceRoll(intensity = 1) {
   // Final settle: lower and softer, the die coming to rest.
   tick(ac, now + 0.33, 0.09, 520);
 }
+
+/** One bell partial: a pure tone with a fast attack and a long-ish ring. */
+function chime(ac: AudioContext, at: number, freq: number, gain: number, dur: number) {
+  const osc = ac.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(freq, at);
+  // Slight upward bend — reads as "bright" rather than a flat beep.
+  osc.frequency.linearRampToValueAtTime(freq * 1.02, at + dur);
+
+  const vol = ac.createGain();
+  vol.gain.setValueAtTime(0, at);
+  vol.gain.linearRampToValueAtTime(gain, at + 0.012);
+  vol.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+
+  osc.connect(vol).connect(ac.destination);
+  osc.start(at);
+  osc.stop(at + dur + 0.02);
+}
+
+/**
+ * Critical-hit flourish: a major triad arpeggiated fast enough to read as one
+ * bright chord. Deliberately short and clean so it lands as punctuation rather
+ * than a fanfare that gets old by the third nat 20 of the night.
+ */
+export function playCritSound() {
+  const ac = audioContext();
+  if (!ac) return;
+  const now = ac.currentTime;
+  // A5, C#6, E6 — a major triad, then the octave to cap it.
+  const notes = [880, 1108.73, 1318.51, 1760];
+  notes.forEach((f, i) => chime(ac, now + i * 0.045, f, 0.1 - i * 0.015, 0.9 - i * 0.12));
+}

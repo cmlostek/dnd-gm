@@ -1062,6 +1062,21 @@ function SyntaxHelp() {
               <span className="text-slate-500"> alone — repeat last whisper</span>
             </li>
             <li>
+              <span className="font-mono text-slate-100">/roll 1d20+5</span>
+              <span className="text-slate-500"> — roll dice (or </span>
+              <span className="font-mono text-slate-100">/r</span>
+              <span className="text-slate-500">)</span>
+            </li>
+            <li className="pl-3 border-l border-slate-800">
+              <span className="text-slate-500">Add a label: </span>
+              <span className="font-mono text-slate-100">/r 2d6+3 sneak attack</span>
+            </li>
+            <li className="pl-3 border-l border-slate-800">
+              <span className="text-slate-500">While whispering, </span>
+              <span className="font-mono text-slate-100">/roll</span>
+              <span className="text-slate-500"> sends the result privately</span>
+            </li>
+            <li>
               <span className="font-mono text-slate-100">Right-click</span>
               <span className="text-slate-500"> a chip — copy ID</span>
             </li>

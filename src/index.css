@@ -260,6 +260,34 @@ body { margin: 0; }
 }
 .flash-red { animation: flashRed 0.9s ease-in-out infinite; }
 
+/* Critical-hit sparks on the dice overlay. CSS rather than SVG <animate>:
+   SMIL `begin` is relative to the document timeline, so an animation inserted
+   into a page that's been open a while starts already finished and freezes at
+   its end state (invisible). A CSS animation starts when the element mounts,
+   which is what a one-shot burst needs. */
+/* Opacity is held across most of the travel and dropped at the end. Fading it
+   in step with an eased transform makes the spark collapse to nothing within
+   the first ~15% of its flight, which reads as no spark at all. */
+@keyframes diceSpark {
+  0%   { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+  12%  { opacity: 1; }
+  70%  { opacity: 1; }
+  100% {
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.5);
+    opacity: 0;
+  }
+}
+.dice-spark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 9999px;
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.7);
+  pointer-events: none;
+  animation: diceSpark var(--dur) cubic-bezier(0.2, 0.7, 0.35, 1) var(--delay) both;
+}
+
 /* Steady gold highlight for a row with an unmet dependency (e.g. ammo out).
    Less urgent than flash-red, which overrides it when both apply. */
 .hl-gold {
