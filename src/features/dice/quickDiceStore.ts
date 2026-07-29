@@ -7,6 +7,9 @@ export type Roll = {
   total: number;
   crit?: 'hit' | 'miss';
   dropped?: number;
+  /** Largest die size in the roll (20 for "1d20 + 5"). Drives the shape the
+   *  roll overlay draws; undefined for modifier-only rolls. */
+  die?: number;
 };
 
 const rollDie = (sides: number) => Math.floor(Math.random() * sides) + 1;
@@ -93,12 +96,18 @@ export const useQuickDice = create<QuickDiceStore>((set, get) => ({
       }
     }
 
+    // Biggest die in the formula — "1d4 + 1d6" reads as a d6 roll for the
+    // overlay's purposes, which matches what the shape should depict.
+    const dice = [...formula.matchAll(/d(\d+)/gi)].map((m) => parseInt(m[1], 10));
+    const die = dice.length ? Math.max(...dice) : undefined;
+
     get().pushRoll({
       id: crypto.randomUUID(),
       label: label ?? formula.trim(),
       detail,
       total,
       crit,
+      die,
     });
     set({ open: true });
   },

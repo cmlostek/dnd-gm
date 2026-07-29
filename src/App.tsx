@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import { Swords, NotebookPen, Map as MapIcon, BookOpen, Sparkles, Package, ScrollText, Users, FlaskConical, Dices, Copy, Mic, Eye, Settings as SettingsIcon, BookMarked, Radio, LayoutDashboard, Menu, X as XIcon, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { QuickDice } from './features/dice/QuickDice';
+import DiceRollOverlay from './features/dice/DiceRollOverlay';
 import { useQuickDice } from './features/dice/quickDiceStore';
 import ChatPanel from './features/chat/ChatPanel';
 import Initiative from './features/initiative/Initiative';
@@ -402,6 +403,9 @@ function AppShell() {
       </main>
       </div>
       <QuickDice />
+      {/* Centre-screen roll flourish. Self-driving: it watches the roll
+          history, so it covers every roll site in the app. */}
+      <DiceRollOverlay />
       {/* Dashboard embeds its own chat surface, so hide the floating one there. */}
       {location.pathname !== '/dashboard' && <ChatPanel />}
     </div>

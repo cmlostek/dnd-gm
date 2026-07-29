@@ -42,6 +42,7 @@ import { useCampaignSettings, COIN_KEYS, DEFAULT_COIN_RATES } from '../notes/cam
 import { useTheme, THEMES } from '../session/themeStore';
 import { useSidebar } from '../session/sidebarStore';
 import { useDashboardPref, DASHBOARD_TAB_LABELS, type DashboardDefaultTab } from '../dashboard/dashboardPrefStore';
+import { useDiceEffects } from '../dice/diceEffectsStore';
 import { CampaignManagementPanel, LeaveCampaignRow } from '../dashboard/Dashboard';
 import { useNavCustomization } from '../../hooks/useNavCustomization';
 import { supabase } from '../../lib/supabase';
@@ -115,6 +116,10 @@ export default function Settings() {
   const setSidebarMode = useSidebar((s) => s.setMode);
   const dashboardDefaultTab = useDashboardPref((s) => s.defaultTab);
   const setDashboardDefaultTab = useDashboardPref((s) => s.setDefaultTab);
+  const diceVisual = useDiceEffects((s) => s.visual);
+  const setDiceVisual = useDiceEffects((s) => s.setVisual);
+  const diceSound = useDiceEffects((s) => s.sound);
+  const setDiceSound = useDiceEffects((s) => s.setSound);
 
   const togglePage = useCampaignSettings((s) => s.togglePage);
   const toggleGmPage = useCampaignSettings((s) => s.toggleGmPage);
@@ -173,6 +178,18 @@ export default function Settings() {
               label: DASHBOARD_TAB_LABELS[v],
             }))}
             onChange={setDashboardDefaultTab}
+          />
+          <SwitchRow
+            label="Show dice rolls on screen"
+            hint="Flashes the result in the centre of the screen whenever anything is rolled."
+            checked={diceVisual}
+            onChange={setDiceVisual}
+          />
+          <SwitchRow
+            label="Dice roll sound"
+            hint="A short clatter on each roll. Turn off if the table shares one speaker."
+            checked={diceSound}
+            onChange={setDiceSound}
           />
           <RoleColorRows />
         </Section>

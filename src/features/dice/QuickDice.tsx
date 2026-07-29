@@ -85,6 +85,7 @@ export function QuickDice() {
       detail: `[${v}]${mod ? ` ${mod >= 0 ? '+' : '−'} ${Math.abs(mod)}` : ''}`,
       total: withMod,
       crit,
+      die: d,
     });
   };
 
@@ -101,6 +102,7 @@ export function QuickDice() {
       total: pick + mod,
       crit,
       dropped,
+      die: 20,
     });
   };
 
