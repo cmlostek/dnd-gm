@@ -66,6 +66,10 @@ export type CampaignSettings = {
   /** When on, the character sheet tracks carried weight against a STR-based
    *  carrying capacity. Off = unlimited (no encumbrance). */
   encumbrance: boolean;
+  /** Which edition's encounter-difficulty maths to use. 'auto' follows
+   *  srdEdition (falling back to 2014 when that's set to 'both'); the explicit
+   *  values let a table run, say, 2024 content on 2014 encounter budgets. */
+  encounterEdition: 'auto' | '2014' | '2024';
 };
 
 export const DEFAULTS: CampaignSettings = {
@@ -77,7 +81,17 @@ export const DEFAULTS: CampaignSettings = {
   hpRollingMethod: 'avg',
   coinRates: { ...DEFAULT_COIN_RATES },
   encumbrance: false,
+  encounterEdition: 'auto',
 };
+
+/** Resolve the effective encounter-maths edition from campaign settings. */
+export function resolveEncounterEdition(s: Pick<CampaignSettings, 'encounterEdition' | 'srdEdition'>): '2014' | '2024' {
+  const pref = s.encounterEdition ?? 'auto';
+  if (pref === '2014' || pref === '2024') return pref;
+  // 'both' has no single answer; 2014 is the conservative default because its
+  // multiplier rates group fights as harder.
+  return s.srdEdition === '2024' ? '2024' : '2014';
+}
 
 const lsKey = (cid: string) => `dnd-gm:campaignSettings:${cid}`;
 
@@ -123,6 +137,7 @@ type SettingsState = {
   setCoinRate: (coin: CoinKey, value: number) => void;
   resetCoinRates: () => void;
   setEncumbrance: (on: boolean) => void;
+  setEncounterEdition: (e: 'auto' | '2014' | '2024') => void;
 };
 
 export const useCampaignSettings = create<SettingsState>((set, get) => ({
@@ -298,6 +313,16 @@ export const useCampaignSettings = create<SettingsState>((set, get) => ({
   setEncumbrance: (on) => {
     const { settings, campaignId } = get();
     const next = { ...settings, encumbrance: on };
+    set({ settings: next });
+    if (campaignId) {
+      lsSave(campaignId, next);
+      sbUpsert(campaignId, next);
+    }
+  },
+
+  setEncounterEdition: (e) => {
+    const { settings, campaignId } = get();
+    const next = { ...settings, encounterEdition: e };
     set({ settings: next });
     if (campaignId) {
       lsSave(campaignId, next);

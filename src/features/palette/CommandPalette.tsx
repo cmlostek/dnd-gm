@@ -49,6 +49,7 @@ const NAV: { to: string; label: string; icon: typeof Search; gmOnly?: boolean }[
   { to: '/map', label: 'Map', icon: MapIcon },
   { to: '/spells', label: 'Spells', icon: Sparkles },
   { to: '/items', label: 'Items', icon: Package },
+  { to: '/encounters', label: 'Encounters', icon: Swords, gmOnly: true },
   { to: '/statblocks', label: 'Stat Blocks', icon: ScrollText, gmOnly: true },
   { to: '/homebrew', label: 'Homebrew', icon: FlaskConical, gmOnly: true },
   { to: '/record', label: 'Record', icon: Mic, gmOnly: true },

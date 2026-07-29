@@ -59,6 +59,7 @@ const NAV: NavItem[] = [
   { to: '/map', label: 'Map', icon: MapIcon },
   { to: '/spells', label: 'Spells', icon: Sparkles },
   { to: '/items', label: 'Items', icon: Package },
+  { to: '/encounters', label: 'Encounters', icon: Swords, gmOnly: true },
   { to: '/statblocks', label: 'Stat Blocks', icon: ScrollText, gmOnly: true },
   { to: '/homebrew', label: 'Homebrew', icon: FlaskConical, gmOnly: true },
   { to: '/record', label: 'Record', icon: Mic, gmOnly: true },
@@ -134,6 +135,9 @@ export default function Settings() {
   const resetCoinRates = useCampaignSettings((s) => s.resetCoinRates);
   const encumbrance = useCampaignSettings((s) => s.settings.encumbrance ?? false);
   const setEncumbrance = useCampaignSettings((s) => s.setEncumbrance);
+  const encounterEdition = useCampaignSettings((s) => s.settings.encounterEdition ?? 'auto');
+  const setEncounterEdition = useCampaignSettings((s) => s.setEncounterEdition);
+  const srdEditionSetting = useCampaignSettings((s) => s.settings.srdEdition);
 
   const trueIsGM = role === 'gm' || role === 'cogm';
   const isGM = trueIsGM && !viewAsPlayer;
@@ -253,6 +257,29 @@ export default function Settings() {
                     }`}
                   >
                     {m === 'avg' ? 'Take average' : m === 'roll' ? 'Roll the die' : 'Manual entry'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="px-4 py-3 border-b border-slate-800 last:border-b-0">
+              <div className="text-sm text-slate-200">Encounter difficulty maths</div>
+              <div className="text-[11px] text-slate-500 font-normal mb-2">
+                2014 multiplies XP by creature count (group fights rate harder); 2024 uses a
+                flat budget. Auto follows the SRD edition above
+                {srdEditionSetting === 'both' && ' — which is set to Both, so Auto uses 2014'}.
+              </div>
+              <div className="flex rounded overflow-hidden border border-slate-700 w-fit">
+                {(['auto', '2014', '2024'] as const).map((e) => (
+                  <button
+                    key={e}
+                    onClick={() => setEncounterEdition(e)}
+                    className={`px-3 py-1 text-xs ${
+                      encounterEdition === e
+                        ? 'bg-sky-900/40 text-sky-200'
+                        : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
+                    }`}
+                  >
+                    {e === 'auto' ? 'Auto' : e}
                   </button>
                 ))}
               </div>

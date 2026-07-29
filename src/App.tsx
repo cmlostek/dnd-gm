@@ -13,6 +13,7 @@ import MapBoard from './features/map/MapBoard';
 import Spells from './features/spells/Spells';
 import Items from './features/items/Items';
 import StatBlocks from './features/statblocks/StatBlocks';
+import Encounters from './features/encounters/Encounters';
 import Rules from './features/rules/Rules';
 import Party from './features/party/Party';
 import Homebrew from './features/homebrew/Homebrew';
@@ -43,6 +44,7 @@ const nav: NavItem[] = [
   { to: '/map', label: 'Map', icon: MapIcon },
   { to: '/spells', label: 'Spells', icon: Sparkles },
   { to: '/items', label: 'Items', icon: Package },
+  { to: '/encounters', label: 'Encounters', icon: Swords, gmOnly: true },
   { to: '/statblocks', label: 'Stat Blocks', icon: ScrollText, gmOnly: true },
   { to: '/homebrew', label: 'Homebrew', icon: FlaskConical, gmOnly: true },
   { to: '/record', label: 'Record', icon: Mic, gmOnly: true },
@@ -394,6 +396,7 @@ function AppShell() {
           <Route path="/items" element={<Items />} />
           {/* /shop removed — redirect any old bookmarks to Items. */}
           <Route path="/shop" element={<Navigate to="/items" replace />} />
+          {isGM && <Route path="/encounters" element={<Encounters />} />}
           {isGM && <Route path="/statblocks" element={<StatBlocks />} />}
           {isGM && <Route path="/homebrew" element={<Homebrew />} />}
           {isGM && <Route path="/record" element={<Transcription />} />}
