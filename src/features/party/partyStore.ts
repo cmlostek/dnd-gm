@@ -37,6 +37,9 @@ export type InventoryItem = {
    *  depends on arrows). The sheet warns when the dependency is missing or at
    *  0 quantity. */
   dependsOn?: string;
+  /** Optional item-icon key (see data/itemIcons). Overrides the auto-derived
+   *  kind icon and any homebrew-source icon when set. */
+  icon?: string;
 };
 
 /** Action-economy bucket. Drives the Actions tab grouping. */

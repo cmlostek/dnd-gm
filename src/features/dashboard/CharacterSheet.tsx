@@ -25,6 +25,9 @@ import { EQUIPMENT, MAGIC_ITEMS, SPELLS, SPECIES_2024, equipmentFor, spellsFor }
 import type { SrdEdition, CoinRates } from '../notes/campaignSettingsStore';
 import { useCampaignSettings, COIN_KEYS, DEFAULT_COIN_RATES } from '../notes/campaignSettingsStore';
 import type { EquipmentItem, Spell } from '../../data/types';
+import IconPicker from '../../components/IconPicker';
+import { iconByKey } from '../../data/itemIcons';
+import { useSharedHomebrew } from '../homebrew/sharedHomebrewStore';
 
 // ── Skill / save definitions ──────────────────────────────────────────────
 
@@ -1700,6 +1703,29 @@ function InventoryRow({
   if (isWeapon) { KindIcon = Swords; kindColor = '#f87171'; }
   else if (isArmor) { KindIcon = ShieldIcon; kindColor = '#60a5fa'; }
   else if (isSpell) { KindIcon = Sparkles; kindColor = '#c4b5fd'; }
+  else if (srdMagic) { KindIcon = Sparkles; kindColor = '#c4b5fd'; }
+
+  // Icon resolution: an explicit per-row override wins; otherwise fall back to
+  // the icon the homebrew item was authored with, then the kind-derived icon.
+  const homebrewIconKey = useSharedHomebrew((s) => {
+    if (item.sourceKind !== 'item' || !item.sourceId) return undefined;
+    const row = s.items.find((r) => r.id === item.sourceId);
+    return (row?.data as Record<string, unknown> | undefined)?.icon as string | undefined;
+  });
+  const HomebrewIcon = iconByKey(homebrewIconKey);
+  const FallbackIcon = HomebrewIcon ?? KindIcon;
+  const fallbackColor = HomebrewIcon ? '#94a3b8' : kindColor;
+
+  // A short type label so non-weapon / non-spell rows still say what they are.
+  const typeLabel = srdMagic
+    ? `${srdMagic.equipment_category.name} · ${srdMagic.rarity.name}`
+    : isArmor && srdItem
+    ? `${srdItem.armor_category ?? 'Armor'}${srdItem.armor_category === 'Shield' ? '' : ' armor'}`
+    : srdItem
+    ? srdItem.equipment_category.name
+    : item.sourceKind === 'item'
+    ? 'Homebrew item'
+    : '';
 
   const stats = isWeapon && srdItem ? weaponStats(member, srdItem) : null;
   const damageFormula = stats?.damageDice
@@ -1714,7 +1740,21 @@ function InventoryRow({
   return (
     <div className={`bg-slate-950 border rounded ${flash ? 'flash-red' : depMissing ? 'hl-gold' : 'border-slate-800'}`}>
     <div className="flex items-center gap-2 px-2 py-1.5">
-      <KindIcon size={14} style={{ color: kindColor }} className="shrink-0" />
+      <div className="print:hidden">
+        <IconPicker
+          value={item.icon}
+          onChange={(key) => onChange({ icon: key })}
+          fallback={FallbackIcon}
+          fallbackColor={fallbackColor}
+          size={14}
+          title="Item icon"
+        />
+      </div>
+      {(() => {
+        // Print gets a plain resolved icon, no picker chrome.
+        const PrintIcon = iconByKey(item.icon) ?? FallbackIcon;
+        return <PrintIcon size={14} style={{ color: fallbackColor }} className="shrink-0 hidden print:block" />;
+      })()}
 
       <div className="min-w-0 flex-1">
         <button
@@ -1759,6 +1799,9 @@ function InventoryRow({
           <div className="text-[11px] text-slate-500">
             {srdSpell.level === 0 ? 'Cantrip' : `Lv ${srdSpell.level}`} · {srdSpell.school.name}
           </div>
+        )}
+        {!stats && !srdSpell && typeLabel && (
+          <div className="text-[11px] text-slate-500">{typeLabel}</div>
         )}
         {/* Dependency picker — shown once a link is set or the row is expanded,
             so rows without dependencies stay uncluttered. */}

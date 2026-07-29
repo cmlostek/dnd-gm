@@ -37,6 +37,9 @@ export type HomebrewItem = {
   weight?: number;
   properties?: string;
   desc: string;
+  /** Optional item-icon key (see data/itemIcons). Falls back to a category
+   *  guess when unset. */
+  icon?: string;
   updatedAt: number;
 };
 
@@ -135,6 +138,12 @@ type State = {
   addHomebrewSpell: (s: Omit<HomebrewSpell, 'id' | 'updatedAt'>) => string;
   updateHomebrewSpell: (id: string, patch: Partial<HomebrewSpell>) => void;
   removeHomebrewSpell: (id: string) => void;
+
+  /** GM-authored description overrides for SRD items, keyed by SRD index slug.
+   *  Lets a table replace or fill in an item's reference text (e.g. the ~130
+   *  basic gear entries the SRD ships without prose). Empty string clears. */
+  itemDescOverrides: Record<string, string>;
+  setItemDescOverride: (index: string, desc: string) => void;
 };
 
 export type StatBlockAction = {
@@ -413,6 +422,15 @@ export const useStore = create<State>()(
         })),
       removeHomebrewSpell: (id) =>
         set((s) => ({ homebrewSpells: s.homebrewSpells.filter((sp) => sp.id !== id) })),
+
+      itemDescOverrides: {},
+      setItemDescOverride: (index, desc) =>
+        set((s) => {
+          const next = { ...s.itemDescOverrides };
+          if (desc.trim() === '') delete next[index];
+          else next[index] = desc;
+          return { itemDescOverrides: next };
+        }),
     }),
     {
       name: 'gm-screen-v1',
@@ -423,6 +441,8 @@ export const useStore = create<State>()(
         if (state && !Array.isArray(state.folders)) state.folders = [];
         if (state && !Array.isArray(state.homebrewItems)) state.homebrewItems = [];
         if (state && !Array.isArray(state.homebrewSpells)) state.homebrewSpells = [];
+        if (state && (typeof state.itemDescOverrides !== 'object' || state.itemDescOverrides === null))
+          state.itemDescOverrides = {};
         return state;
       },
     }
