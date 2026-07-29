@@ -11,6 +11,7 @@ import MentionTextarea from './MentionTextarea';
 import { extractMentionIds, parseSegments, filterMembers } from './mentions';
 import { useCatalog, type CatalogKind } from './catalog';
 import { useChatCatalog } from './useChatCatalog';
+import { useOpenCatalogRef } from './useOpenCatalogRef';
 import { KIND_FG, KIND_PILL_BG, KIND_ICON_CHAR } from './chips';
 import ChipContextMenu from './ChipContextMenu';
 import {
@@ -727,37 +728,7 @@ function MessageBody({
   selfId: string;
 }) {
   const segs = useMemo(() => parseSegments(body), [body]);
-  const navigate = useNavigate();
-  const setActiveNote = useNotes((s) => s.setActiveNote);
-  const setActiveNpc = useNpcStore((s) => s.setActive);
-
-  const onOpenRef = (refKind: CatalogKind, identifier: string) => {
-    switch (refKind) {
-      case 'note':
-        setActiveNote(identifier);
-        navigate('/notes');
-        break;
-      case 'npc':
-        setActiveNpc(identifier);
-        navigate('/npcs');
-        break;
-      case 'item':
-        navigate(`/items#custom-${identifier}`);
-        break;
-      case 'srd-item':
-        navigate(`/items#${identifier}`);
-        break;
-      case 'spell':
-        navigate(`/spells#custom-${identifier}`);
-        break;
-      case 'srd-spell':
-        navigate(`/spells#${identifier}`);
-        break;
-      case 'rule':
-        navigate(`/rules#${identifier}`);
-        break;
-    }
-  };
+  const onOpenRef = useOpenCatalogRef();
 
   return (
     <div
