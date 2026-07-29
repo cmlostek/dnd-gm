@@ -3,7 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate } from 'react-router-dom';
 import { MessageCircle, X, Send, Pencil, Trash2, Check, Palette, HelpCircle, Eye } from 'lucide-react';
-import { useChat, type ChatMember, type ChatMessage } from './chatStore';
+import { useChat, type ChatMember, type ChatMessage, type ChatRollData } from './chatStore';
+import { useQuickDice, makeRoll } from '../dice/quickDiceStore';
 import { useChatPanel } from './chatPanelStore';
 import { useSession } from '../session/sessionStore';
 import MentionTextarea from './MentionTextarea';
@@ -103,6 +104,7 @@ export default function ChatPanel({ variant = 'floating' }: { variant?: 'floatin
   const subscribe = useChat((s) => s.subscribe);
   const clear = useChat((s) => s.clear);
   const send = useChat((s) => s.send);
+  const sendRoll = useChat((s) => s.sendRoll);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const catalog = useCatalog();
@@ -387,13 +389,90 @@ export default function ChatPanel({ variant = 'floating' }: { variant?: 'floatin
         members={Object.values(members)}
         selfId={userId}
         catalog={catalog}
-        onSend={(body, opts) =>
-          send(campaignId, body, {
+        onSend={(body, opts) => {
+          // `/roll 1d20+5` posts a result card instead of the literal text, and
+          // also drops it into the local dice history so the on-screen flourish
+          // fires for the person who rolled.
+          const cmd = parseRollCommand(body);
+          if (cmd) {
+            const roll = makeRoll(cmd.formula, cmd.label);
+            if (roll) {
+              useQuickDice.getState().pushRoll(roll);
+              return sendRoll(
+                campaignId,
+                {
+                  kind: 'roll',
+                  label: roll.label,
+                  detail: roll.detail,
+                  total: roll.total,
+                  die: roll.die,
+                  crit: roll.crit,
+                },
+                { whisperTo: opts?.whisperTo },
+              );
+            }
+            // Unparseable formula falls through and posts as plain text, so the
+            // typo is visible rather than silently swallowed.
+          }
+          return send(campaignId, body, {
             mentions: extractMentionIds(body),
             whisperTo: opts?.whisperTo,
-          })
-        }
+          });
+        }}
       />
+    </div>
+  );
+}
+
+/**
+ * Parse a `/roll` (or `/r`) command into a formula and optional label.
+ *
+ *   /roll 1d20+5              → { formula: '1d20+5' }
+ *   /r 2d6 + 3 sneak attack   → { formula: '2d6 + 3', label: 'sneak attack' }
+ *
+ * The formula is matched greedily as leading dice/modifier terms; whatever
+ * follows is treated as a label, so players can annotate a roll naturally
+ * without learning a separator.
+ */
+export function parseRollCommand(input: string): { formula: string; label?: string } | null {
+  const m = input.trim().match(/^\/(?:roll|r)\s+(.+)$/i);
+  if (!m) return null;
+  const rest = m[1].trim();
+  const split = rest.match(/^((?:\s*[+-]?\s*(?:\d*d\d+|\d+))+)\s*(.*)$/i);
+  if (!split) return null;
+  const formula = split[1].trim();
+  const label = split[2].trim();
+  if (!formula) return null;
+  return { formula, label: label || undefined };
+}
+
+/** A dice result rendered inside the chat log. */
+function RollCard({ roll }: { roll: ChatRollData }) {
+  const accent =
+    roll.crit === 'hit' ? '#fbbf24' : roll.crit === 'miss' ? '#f43f5e' : 'var(--ac-400)';
+  return (
+    <div
+      className="mt-0.5 inline-flex items-center gap-2.5 rounded border px-2.5 py-1.5"
+      style={{ borderColor: `${'var(--ac-700)'}`, background: 'rgb(2 6 23 / 0.5)' }}
+    >
+      <span
+        className="font-mono text-lg leading-none tabular-nums"
+        style={{ color: accent }}
+      >
+        {roll.total}
+      </span>
+      <span className="flex flex-col leading-tight min-w-0">
+        <span className="text-[11px] text-slate-300 truncate">{roll.label}</span>
+        <span className="text-[10px] font-mono text-slate-500 truncate">{roll.detail}</span>
+      </span>
+      {roll.crit && (
+        <span
+          className="text-[9px] uppercase tracking-[0.15em] shrink-0"
+          style={{ color: accent }}
+        >
+          {roll.crit === 'hit' ? 'Crit' : 'Fumble'}
+        </span>
+      )}
     </div>
   );
 }
@@ -519,6 +598,8 @@ function MessageRow({
           onSave={saveEdit}
           onCancel={cancelEdit}
         />
+      ) : msg.data?.kind === 'roll' && !isDeleted ? (
+        <RollCard roll={msg.data} />
       ) : (
         <MessageBody body={msg.body} members={members} whisper={isWhisper} selfId={selfId} />
       )}

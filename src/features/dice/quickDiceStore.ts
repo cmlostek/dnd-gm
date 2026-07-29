@@ -56,6 +56,41 @@ export function evalFormula(
   return { total, detail: parts.join(' ') };
 }
 
+/**
+ * Build a Roll from a formula without touching any store. Shared by the quick
+ * dice panel and the chat `/roll` command so crit detection and die-size
+ * derivation can't drift between them. Returns null for an unparseable formula.
+ */
+export function makeRoll(formula: string, label?: string): Roll | null {
+  const trimmed = formula.trim();
+  const result = evalFormula(trimmed);
+  if (!result) return null;
+  const { total, detail } = result;
+
+  // Nat-20 / nat-1 on any d20 term.
+  let crit: Roll['crit'];
+  if (/d20/i.test(trimmed)) {
+    const m = detail.match(/\[(\d+)\]/);
+    if (m) {
+      const v = parseInt(m[1], 10);
+      if (v === 20) crit = 'hit';
+      else if (v === 1) crit = 'miss';
+    }
+  }
+
+  // Biggest die in the formula — "1d4 + 1d6" reads as a d6 roll for display.
+  const dice = [...trimmed.matchAll(/d(\d+)/gi)].map((m) => parseInt(m[1], 10));
+
+  return {
+    id: crypto.randomUUID(),
+    label: label ?? trimmed,
+    detail,
+    total,
+    crit,
+    die: dice.length ? Math.max(...dice) : undefined,
+  };
+}
+
 type QuickDiceStore = {
   open: boolean;
   history: Roll[];
@@ -81,34 +116,9 @@ export const useQuickDice = create<QuickDiceStore>((set, get) => ({
   clearHistory: () => set({ history: [] }),
 
   rollFormula: (formula, label) => {
-    const result = evalFormula(formula.trim());
-    if (!result) return;
-    const { total, detail } = result;
-
-    // Detect nat-20 / nat-1 on any d20 term
-    let crit: Roll['crit'];
-    if (/d20/i.test(formula)) {
-      const m = detail.match(/\[(\d+)\]/);
-      if (m) {
-        const v = parseInt(m[1], 10);
-        if (v === 20) crit = 'hit';
-        else if (v === 1) crit = 'miss';
-      }
-    }
-
-    // Biggest die in the formula — "1d4 + 1d6" reads as a d6 roll for the
-    // overlay's purposes, which matches what the shape should depict.
-    const dice = [...formula.matchAll(/d(\d+)/gi)].map((m) => parseInt(m[1], 10));
-    const die = dice.length ? Math.max(...dice) : undefined;
-
-    get().pushRoll({
-      id: crypto.randomUUID(),
-      label: label ?? formula.trim(),
-      detail,
-      total,
-      crit,
-      die,
-    });
+    const roll = makeRoll(formula, label);
+    if (!roll) return;
+    get().pushRoll(roll);
     set({ open: true });
   },
 }));

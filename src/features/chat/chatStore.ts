@@ -8,6 +8,21 @@ export type ChatMember = {
   color: string;
 };
 
+/** A dice result posted to chat. Mirrors the shape of a QuickDice Roll so the
+ *  same result can be shown in the panel, the overlay, and the chat log. */
+export type ChatRollData = {
+  kind: 'roll';
+  label: string;
+  detail: string;
+  total: number;
+  die?: number;
+  crit?: 'hit' | 'miss';
+};
+
+/** Structured payload for non-plain messages. Union so future message kinds
+ *  (handouts, initiative callouts) can slot in beside rolls. */
+export type ChatMessageData = ChatRollData;
+
 export type ChatMessage = {
   id: string;
   campaignId: string;
@@ -18,6 +33,8 @@ export type ChatMessage = {
   editedAt: string | null;
   deletedAt: string | null;
   createdAt: string;
+  /** Null for ordinary text messages. */
+  data: ChatMessageData | null;
 };
 
 type Row = Record<string, unknown>;
@@ -33,6 +50,7 @@ function rowToMessage(r: Row): ChatMessage {
     editedAt: (r.edited_at as string | null) ?? null,
     deletedAt: (r.deleted_at as string | null) ?? null,
     createdAt: r.created_at as string,
+    data: (r.data as ChatMessageData | null) ?? null,
   };
 }
 
@@ -68,7 +86,11 @@ interface ChatState {
   subscribe(id: string): () => void;
   clear(): void;
 
-  send(campaignId: string, body: string, opts?: { whisperTo?: string[]; mentions?: string[] }): Promise<void>;
+  send(campaignId: string, body: string, opts?: { whisperTo?: string[]; mentions?: string[]; data?: ChatMessageData }): Promise<void>;
+  /** Post a dice result to the campaign log. `body` is the plain-text fallback
+   *  shown anywhere the structured card isn't rendered (notifications, older
+   *  clients). */
+  sendRoll(campaignId: string, roll: ChatRollData, opts?: { whisperTo?: string[] }): Promise<void>;
   edit(id: string, body: string): Promise<void>;
   remove(id: string): Promise<void>;
   clearAll(campaignId: string): Promise<{ ok: true } | { ok: false; error: string }>;
@@ -196,6 +218,7 @@ export const useChat = create<ChatState>((set, get) => ({
       editedAt: null,
       deletedAt: null,
       createdAt: new Date().toISOString(),
+      data: opts?.data ?? null,
     };
     set((s) => {
       const next = new Set(s.pendingIds);
@@ -210,6 +233,7 @@ export const useChat = create<ChatState>((set, get) => ({
       body: trimmed,
       mentions: opts?.mentions ?? [],
       whisper_to: opts?.whisperTo ?? null,
+      data: opts?.data ?? null,
     });
 
     if (error) {
@@ -221,6 +245,12 @@ export const useChat = create<ChatState>((set, get) => ({
       });
       console.error('[chat] send failed', error);
     }
+  },
+
+  sendRoll: async (campaignId, roll, opts) => {
+    // Plain-text fallback keeps the log readable anywhere the card isn't drawn.
+    const body = `🎲 ${roll.label}: ${roll.total} (${roll.detail})`;
+    await get().send(campaignId, body, { whisperTo: opts?.whisperTo, data: roll });
   },
 
   edit: async (id, body) => {

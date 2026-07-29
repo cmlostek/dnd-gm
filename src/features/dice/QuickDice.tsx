@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Dices, X, Trash2 } from 'lucide-react';
+import { Dices, X, Trash2, Send } from 'lucide-react';
 import { useQuickDice, type Roll } from './quickDiceStore';
+import { useChat } from '../chat/chatStore';
+import { useSession } from '../session/sessionStore';
 
 type Die = 4 | 6 | 8 | 10 | 12 | 20 | 100;
 const DICE: Die[] = [4, 6, 8, 10, 12, 20, 100];
@@ -30,6 +32,8 @@ function writePos(pos: { x: number; y: number } | null) {
 
 export function QuickDice() {
   const { open, close, history, pushRoll, clearHistory } = useQuickDice();
+  const sendRoll = useChat((s) => s.sendRoll);
+  const campaignId = useSession((s) => s.campaignId);
   const [mod, setMod] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(() => readPos());
@@ -210,7 +214,7 @@ export function QuickDice() {
           history.map((r: Roll) => (
             <div
               key={r.id}
-              className="px-3 py-1.5 border-b border-slate-900 flex items-baseline justify-between gap-2"
+              className="group px-3 py-1.5 border-b border-slate-900 flex items-baseline justify-between gap-2"
             >
               <div className="min-w-0">
                 <div className="text-[11px] text-slate-400 truncate">{r.label}</div>
@@ -218,6 +222,24 @@ export function QuickDice() {
                   {r.detail}
                 </div>
               </div>
+              {campaignId && (
+                <button
+                  onClick={() =>
+                    void sendRoll(campaignId, {
+                      kind: 'roll',
+                      label: r.label,
+                      detail: r.detail,
+                      total: r.total,
+                      die: r.die,
+                      crit: r.crit,
+                    })
+                  }
+                  title="Share this roll in chat"
+                  className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-sky-300 shrink-0 transition-opacity"
+                >
+                  <Send size={11} />
+                </button>
+              )}
               <div
                 className={`font-serif text-xl shrink-0 ${
                   r.crit === 'hit'
