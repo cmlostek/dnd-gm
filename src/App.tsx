@@ -4,6 +4,8 @@ import { Swords, NotebookPen, Map as MapIcon, BookOpen, Sparkles, Package, Scrol
 import { QuickDice } from './features/dice/QuickDice';
 import DiceRollOverlay from './features/dice/DiceRollOverlay';
 import CommandPalette from './features/palette/CommandPalette';
+import Scratchpad from './features/scratchpad/Scratchpad';
+import { useScratchpad } from './features/scratchpad/scratchpadStore';
 import { useQuickDice } from './features/dice/quickDiceStore';
 import ChatPanel from './features/chat/ChatPanel';
 import Initiative from './features/initiative/Initiative';
@@ -82,6 +84,8 @@ export default function App() {
 function AppShell() {
   const toggleQuickDice = useQuickDice((s) => s.toggle);
   const quickDiceOpen = useQuickDice((s) => s.open);
+  const toggleScratchpad = useScratchpad((s) => s.toggle);
+  const scratchpadOpen = useScratchpad((s) => s.open);
   const role = useSession((s) => s.role);
   const campaignId = useSession((s) => s.campaignId);
   const campaignName = useSession((s) => s.campaignName);
@@ -241,6 +245,18 @@ function AppShell() {
             >
               <Dices size={14} />
             </button>
+            <button
+              onClick={toggleScratchpad}
+              title="Scratchpad"
+              className={`p-1.5 rounded border ${
+                scratchpadOpen
+                  ? 'bg-slate-900'
+                  : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300'
+              }`}
+              style={scratchpadOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
+            >
+              <NotebookPen size={14} />
+            </button>
             {isGM && recordingSupported && (
               <button
                 onClick={isRecording ? stopRecording : startRecording}
@@ -315,6 +331,18 @@ function AppShell() {
                 style={quickDiceOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
               >
                 <Dices size={14} />
+              </button>
+              <button
+                onClick={toggleScratchpad}
+                title="Scratchpad"
+                className={`p-1.5 rounded border ${
+                  scratchpadOpen
+                    ? 'bg-slate-900'
+                    : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300'
+                }`}
+                style={scratchpadOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
+              >
+                <NotebookPen size={14} />
               </button>
             </div>
           </div>
@@ -412,6 +440,7 @@ function AppShell() {
       <DiceRollOverlay />
       {/* ⌘K / Ctrl-K from anywhere. Registers its own global key listener. */}
       <CommandPalette />
+      <Scratchpad />
       {/* Dashboard embeds its own chat surface, so hide the floating one there. */}
       {location.pathname !== '/dashboard' && <ChatPanel />}
     </div>

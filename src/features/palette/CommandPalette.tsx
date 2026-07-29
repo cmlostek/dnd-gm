@@ -14,6 +14,7 @@ import { useCampaignSettings } from '../notes/campaignSettingsStore';
 import { useTheme } from '../session/themeStore';
 import { useQuickDice } from '../dice/quickDiceStore';
 import { useParty } from '../party/partyStore';
+import { useScratchpad } from '../scratchpad/scratchpadStore';
 import { KIND_FG } from '../chat/chips';
 
 /**
@@ -78,6 +79,7 @@ export default function CommandPalette() {
   const { mode, toggle: toggleMode } = useTheme();
   const rollFormula = useQuickDice((s) => s.rollFormula);
   const openDice = useQuickDice((s) => s.openPanel);
+  const openScratchpad = useScratchpad((s) => s.openPad);
   const party = useParty((s) => s.party);
   const loadParty = useParty((s) => s.loadForCampaign);
 
@@ -144,6 +146,13 @@ export default function CommandPalette() {
         run: () => openDice(),
       },
       {
+        id: 'scratchpad',
+        label: 'Open scratchpad',
+        hint: 'quick notes',
+        icon: NotebookPen,
+        run: () => openScratchpad(),
+      },
+      {
         id: 'theme:toggle',
         label: mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
         icon: mode === 'dark' ? Sun : Moon,
@@ -162,7 +171,7 @@ export default function CommandPalette() {
     return out;
   }, [
     isGM, trueIsGM, viewAsPlayer, hiddenPages, allowedGmPages, mode,
-    navigate, rollFormula, openDice, toggleMode, setViewAsPlayer,
+    navigate, rollFormula, openDice, openScratchpad, toggleMode, setViewAsPlayer,
   ]);
 
   const rows = useMemo<Row[]>(() => {

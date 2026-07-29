@@ -12,6 +12,7 @@ import { extractMentionIds, parseSegments, filterMembers } from './mentions';
 import { useCatalog, type CatalogKind } from './catalog';
 import { useChatCatalog } from './useChatCatalog';
 import { useOpenCatalogRef } from './useOpenCatalogRef';
+import { useNotifications } from '../notifications/notificationStore';
 import { KIND_FG, KIND_PILL_BG, KIND_ICON_CHAR } from './chips';
 import ChipContextMenu from './ChipContextMenu';
 import {
@@ -152,6 +153,44 @@ export default function ChatPanel({ variant = 'floating' }: { variant?: 'floatin
     }
     prevPingCountRef.current = pingCount;
   }, [pingCount]);
+
+  // Browser notification for the same events, gated on the tab being in the
+  // background (the store checks visibility). Tracked by message id rather
+  // than by count so re-renders and deletions can't re-fire an old ping.
+  const notify = useNotifications((s) => s.notify);
+  const notifiedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!userId) return;
+    const pings = messages.filter(
+      (m) =>
+        m.senderId !== userId &&
+        !m.deletedAt &&
+        new Date(m.createdAt).getTime() > lastSeenAt &&
+        (m.mentions.includes(userId) || (m.whisperTo?.includes(userId) ?? false)),
+    );
+    const latest = pings[pings.length - 1];
+    if (!latest) return;
+    // First pass after load just records where we are — otherwise opening the
+    // app with unread mentions fires a popup for a message from hours ago.
+    if (notifiedIdRef.current === null) {
+      notifiedIdRef.current = latest.id;
+      return;
+    }
+    if (notifiedIdRef.current === latest.id) return;
+    notifiedIdRef.current = latest.id;
+
+    const whisper = latest.whisperTo?.includes(userId) ?? false;
+    const from = members[latest.senderId]?.displayName ?? 'Someone';
+    const preview =
+      latest.data?.kind === 'roll'
+        ? `rolled ${latest.data.total} — ${latest.data.label}`
+        : latest.body.slice(0, 120);
+    notify(
+      whisper ? 'whisper' : 'mention',
+      whisper ? `${from} whispered you` : `${from} mentioned you`,
+      preview,
+    );
+  }, [messages, lastSeenAt, userId, members, notify]);
 
   // Mark messages as read whenever chat is visible (embedded view, or
   // floating panel open). Re-fires on new message arrivals so the count

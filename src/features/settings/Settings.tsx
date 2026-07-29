@@ -43,6 +43,7 @@ import { useTheme, THEMES } from '../session/themeStore';
 import { useSidebar } from '../session/sidebarStore';
 import { useDashboardPref, DASHBOARD_TAB_LABELS, type DashboardDefaultTab } from '../dashboard/dashboardPrefStore';
 import { useDiceEffects } from '../dice/diceEffectsStore';
+import { useNotifications } from '../notifications/notificationStore';
 import { CampaignManagementPanel, LeaveCampaignRow } from '../dashboard/Dashboard';
 import { useNavCustomization } from '../../hooks/useNavCustomization';
 import { supabase } from '../../lib/supabase';
@@ -121,6 +122,7 @@ export default function Settings() {
   const setDiceVisual = useDiceEffects((s) => s.setVisual);
   const diceSound = useDiceEffects((s) => s.sound);
   const setDiceSound = useDiceEffects((s) => s.setSound);
+  const notif = useNotifications();
 
   const togglePage = useCampaignSettings((s) => s.togglePage);
   const toggleGmPage = useCampaignSettings((s) => s.toggleGmPage);
@@ -195,6 +197,47 @@ export default function Settings() {
             checked={diceSound}
             onChange={setDiceSound}
           />
+        </Section>
+
+        <Section title="Notifications">
+          {!notif.supported ? (
+            <div className="px-4 py-3 text-[12px] text-slate-500">
+              This browser doesn't support notifications.
+            </div>
+          ) : (
+            <>
+              <SwitchRow
+                label="Desktop notifications"
+                hint={
+                  notif.permission === 'denied'
+                    ? 'Blocked for this site — re-allow it in your browser’s site settings first.'
+                    : 'Alerts you when the Grimoire tab is in the background. Nothing is shown while you’re looking at the page.'
+                }
+                checked={notif.enabled && notif.permission === 'granted'}
+                onChange={async (v) => {
+                  if (!v) { notif.setEnabled(false); return; }
+                  // Only prompt when switching on, so the browser dialog always
+                  // follows a deliberate action.
+                  const p = notif.permission === 'granted' ? 'granted' : await notif.request();
+                  notif.setEnabled(p === 'granted');
+                }}
+              />
+              {notif.enabled && notif.permission === 'granted' && (
+                <>
+                  <SwitchRow
+                    label="When someone @mentions me"
+                    checked={notif.onMention}
+                    onChange={notif.setOnMention}
+                  />
+                  <SwitchRow
+                    label="When someone whispers me"
+                    checked={notif.onWhisper}
+                    onChange={notif.setOnWhisper}
+                  />
+                </>
+              )}
+            </>
+          )}
           <RoleColorRows />
         </Section>
 
