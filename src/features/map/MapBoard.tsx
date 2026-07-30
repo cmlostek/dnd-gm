@@ -11,7 +11,8 @@ import WallsLayer from './canvas/layers/WallsLayer';
 import LightsLayer from './canvas/layers/LightsLayer';
 import type { LightArea } from './canvas/layers/FogLayer';
 import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
-import { DEFAULT_LIGHT_RADIUS } from './mapStore';
+import { wallSegments, curveMidpoint, controlThroughMidpoint, resolveMovement } from './vision/walls';
+import { DEFAULT_LIGHT_RADIUS, type MapWall } from './mapStore';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
@@ -456,6 +457,7 @@ export default function MapBoard() {
   const commitFog = useMap((s) => s.commitFog);
   const clearFog = useMap((s) => s.clearFog);
   const addWall = useMap((s) => s.addWall);
+  const updateWall = useMap((s) => s.updateWall);
   const removeWall = useMap((s) => s.removeWall);
   const clearWalls = useMap((s) => s.clearWalls);
   const addLight = useMap((s) => s.addLight);
@@ -497,6 +499,10 @@ export default function MapBoard() {
   // Live cursor position while drafting a shape — drives the dashed preview
   // so the GM can actually see what they're about to drop on the canvas.
   const [draftEnd, setDraftEnd] = useState<{ x: number; y: number } | null>(null);
+  // Wall bend drag — the live-preview wall while dragging its midpoint handle
+  // into a curve. Committed to the store (updateWall) on mouse-up.
+  const [wallBend, setWallBend] = useState<MapWall | null>(null);
+  const wallBendRef = useRef(false);
   // Shape drag state — { id, ox, oy } where ox/oy are the offsets from the
   // shape's anchor to the mouse-down point, so the shape doesn't snap to
   // the cursor on grab.
@@ -1263,14 +1269,37 @@ export default function MapBoard() {
 
     const p = screenToLogical(e);
 
+    if (wallBendRef.current && wallBend) {
+      // Drag the midpoint handle: bend the curve to pass through the cursor.
+      const { cx, cy } = controlThroughMidpoint(wallBend, p);
+      setWallBend({ ...wallBend, cx, cy });
+      return;
+    }
+
     if (fogPaintingRef.current) {
       paintFogAt(p);
       return;
     }
 
     if (draggingTokenId) {
-      const sp = snap({ x: p.x - dragOffset.x, y: p.y - dragOffset.y });
-      setLocalDrag({ id: draggingTokenId, x: sp.x, y: sp.y });
+      const desired = { x: p.x - dragOffset.x, y: p.y - dragOffset.y };
+      // Walls block tokens (slide-along), except a GM holding Alt walks through.
+      const collide = wallSegs.length > 0 && !(isGM && e.altKey);
+      let next: { x: number; y: number };
+      if (collide) {
+        // Resolve from the last committed drag position so fast drags across a
+        // thin wall still get caught (incremental sweep, not one big jump).
+        const from = localDrag && localDrag.id === draggingTokenId
+          ? { x: localDrag.x, y: localDrag.y }
+          : (() => {
+              const t = tokens.find((x) => x.id === draggingTokenId);
+              return t ? { x: t.x, y: t.y } : desired;
+            })();
+        next = resolveMovement(from, desired, wallSegs);
+      } else {
+        next = snap(desired);
+      }
+      setLocalDrag({ id: draggingTokenId, x: next.x, y: next.y });
       return;
     }
     if (ruler && tool === 'ruler') {
@@ -1331,6 +1360,12 @@ export default function MapBoard() {
   const onMouseUp = (e: React.MouseEvent) => {
     if (isPanningRef.current) {
       isPanningRef.current = false;
+      return;
+    }
+    if (wallBendRef.current) {
+      wallBendRef.current = false;
+      if (wallBend && currentSceneId) void updateWall(currentSceneId, wallBend);
+      setWallBend(null);
       return;
     }
     if (fogPaintingRef.current) {
@@ -1499,14 +1534,22 @@ export default function MapBoard() {
   const fogEnabled = currentScene?.fog.enabled ?? false;
   const sceneFogMode = currentScene?.fog.mode ?? 'manual';
   const walls = currentScene?.walls;
+  // Tessellated wall segments (curves sampled to lines) — one source for both
+  // line of sight and token collision.
+  const wallSegs = useMemo(() => wallSegments(walls ?? []), [walls]);
+  // Begin dragging a wall's midpoint handle to bend it into a curve.
+  const onBendStart = useCallback((wall: MapWall) => {
+    wallBendRef.current = true;
+    setWallBend(wall);
+  }, []);
   const visionPolys = useMemo<Vec[][]>(() => {
-    if (!fogEnabled || sceneFogMode !== 'dynamic' || !walls) return [];
+    if (!fogEnabled || sceneFogMode !== 'dynamic') return [];
     const origins = tokens.filter((t) => {
       const onScene = t.scene_id ? t.scene_id === currentSceneId : currentSceneId === state.active_scene_id;
       return onScene && !!t.owner_user_id;
     });
-    return origins.map((t) => computeVisibility({ x: t.x, y: t.y }, walls, canvasW, canvasH));
-  }, [fogEnabled, sceneFogMode, walls, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
+    return origins.map((t) => computeVisibility({ x: t.x, y: t.y }, wallSegs, canvasW, canvasH));
+  }, [fogEnabled, sceneFogMode, wallSegs, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
 
   // Explored memory: mark every fog cell whose centre falls inside the current
   // sight as "seen" so it stays dimly lit after the party moves on. Runs when
@@ -1529,14 +1572,14 @@ export default function MapBoard() {
   const ambientDark = currentScene?.fog.ambientDark ?? false;
   const lights = currentScene?.lights;
   const lightAreas = useMemo<LightArea[]>(() => {
-    if (!fogEnabled || sceneFogMode !== 'dynamic' || !ambientDark || !walls) return [];
+    if (!fogEnabled || sceneFogMode !== 'dynamic' || !ambientDark) return [];
     // Placed scene lights…
     const scene = (lights ?? []).map((l) => ({
       id: l.id,
       cx: l.x,
       cy: l.y,
       radius: l.radius,
-      poly: computeVisibility({ x: l.x, y: l.y }, walls, canvasW, canvasH),
+      poly: computeVisibility({ x: l.x, y: l.y }, wallSegs, canvasW, canvasH),
     }));
     // …plus lights carried by tokens (torches / darkvision), which move with
     // them. Committed positions so this recomputes on drag-end, like sight.
@@ -1550,10 +1593,10 @@ export default function MapBoard() {
         cx: t.x,
         cy: t.y,
         radius: t.lightRadius as number,
-        poly: computeVisibility({ x: t.x, y: t.y }, walls, canvasW, canvasH),
+        poly: computeVisibility({ x: t.x, y: t.y }, wallSegs, canvasW, canvasH),
       }));
     return [...scene, ...carried];
-  }, [fogEnabled, sceneFogMode, ambientDark, walls, lights, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
+  }, [fogEnabled, sceneFogMode, ambientDark, wallSegs, lights, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
 
   // Sidebar order: match each token to an initiative combatant by name
   // (case-insensitive) and use that initiative as the sort key — highest
@@ -2485,11 +2528,15 @@ export default function MapBoard() {
               {/* Walls — GM only, above fog so they stay visible while editing */}
               {isGM && currentScene && (
                 <WallsLayer
-                  walls={currentScene.walls}
+                  walls={wallBend
+                    ? (currentScene.walls ?? []).map((w) => (w.id === wallBend.id ? wallBend : w))
+                    : currentScene.walls}
                   zoom={zoom}
+                  showHandles={tool === 'wall'}
                   draftStart={tool === 'wall' ? drafting : null}
                   draftEnd={tool === 'wall' ? draftEnd : null}
                   onRemoveWall={currentSceneId ? (id) => void removeWall(currentSceneId, id) : undefined}
+                  onBendStart={onBendStart}
                 />
               )}
 

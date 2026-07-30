@@ -115,7 +115,17 @@ export const DEFAULT_LIGHT_RADIUS = 150;
  * feeds the line-of-sight computation. Structurally a visibility `Seg` plus an
  * id. Stored in scene.data — tiny (four numbers), so no realtime-size concern.
  */
-export type MapWall = { id: string; x1: number; y1: number; x2: number; y2: number };
+export type MapWall = {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** Optional quadratic-bezier control point — bends the wall into an arc.
+   *  Absent or on the midpoint = straight. */
+  cx?: number;
+  cy?: number;
+};
 
 type SceneData = {
   shapes?: MapShape[];
@@ -293,6 +303,7 @@ type MapStore = {
 
   // ── Walls (per-scene, sight-blocking) ────────────────────────────────────
   addWall: (sceneId: string, wall: MapWall) => Promise<void>;
+  updateWall: (sceneId: string, wall: MapWall) => Promise<void>;
   removeWall: (sceneId: string, wallId: string) => Promise<void>;
   clearWalls: (sceneId: string) => Promise<void>;
 
@@ -720,6 +731,16 @@ export const useMap = create<MapStore>((set, get) => ({
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [...s.walls, wall] } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: [...s.walls, wall] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  updateWall: async (sceneId, wall) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) }));
     } catch (e) {
       set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
     }
