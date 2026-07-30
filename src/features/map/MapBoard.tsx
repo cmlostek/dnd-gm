@@ -6,6 +6,7 @@ import PingsLayer from './canvas/layers/PingsLayer';
 import ImageLayers from './canvas/layers/ImageLayers';
 import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
+import FogLayer from './canvas/layers/FogLayer';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
@@ -50,9 +51,10 @@ import {
   ArrowUp,
   ArrowDown,
   Pencil,
+  Cloud,
 } from 'lucide-react';
 
-type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit';
+type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog';
 
 type Ping = { id: string; x: number; y: number; color: string };
 type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' };
@@ -441,6 +443,10 @@ export default function MapBoard() {
   const addToken = useMap((s) => s.addToken);
   const updateToken = useMap((s) => s.updateToken);
   const removeToken = useMap((s) => s.removeToken);
+  const setFogEnabled = useMap((s) => s.setFogEnabled);
+  const paintFogLocal = useMap((s) => s.paintFogLocal);
+  const commitFog = useMap((s) => s.commitFog);
+  const clearFog = useMap((s) => s.clearFog);
 
   // The GM may stage a non-active scene by setting gm_preview_scene_id; their
   // local view follows that, while players always render the active scene.
@@ -464,6 +470,11 @@ export default function MapBoard() {
 
   // ── Tool state ───────────────────────────────────────────────────────────
   const [tool, setTool] = useState<Tool>('select');
+  // Fog brush settings (GM). Mode toggles paint-to-reveal vs paint-to-hide;
+  // brush is the square side length in cells (1, 3, or 5).
+  const [fogMode, setFogMode] = useState<'reveal' | 'hide'>('reveal');
+  const [fogBrush, setFogBrush] = useState(3);
+  const fogPaintingRef = useRef(false);
   const [ruler, setRuler] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const [drafting, setDrafting] = useState<{ x: number; y: number } | null>(null);
   // Live cursor position while drafting a shape — drives the dashed preview
@@ -1106,6 +1117,27 @@ export default function MapBoard() {
   }, [draggingTokenId, localDrag]);
 
   // ── Mouse handlers ────────────────────────────────────────────────────────
+  /** Paint the brush's square of cells at a logical point into local fog. */
+  const paintFogAt = (p: { x: number; y: number }) => {
+    if (!currentSceneId || !currentScene) return;
+    const cell = currentScene.fog.cell || 50;
+    const cx = Math.floor(p.x / cell);
+    const cy = Math.floor(p.y / cell);
+    const r = Math.floor(fogBrush / 2);
+    const maxCol = Math.ceil(canvasW / cell) - 1;
+    const maxRow = Math.ceil(canvasH / cell) - 1;
+    const cells: string[] = [];
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        const col = cx + dx;
+        const row = cy + dy;
+        if (col < 0 || row < 0 || col > maxCol || row > maxRow) continue;
+        cells.push(`${col},${row}`);
+      }
+    }
+    if (cells.length) paintFogLocal(currentSceneId, cells, fogMode === 'reveal');
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (draggingTokenId) return;
     if (!campaignId) return;
@@ -1184,6 +1216,11 @@ export default function MapBoard() {
     }
 
     if (!isGM) return;
+    if (tool === 'fog') {
+      fogPaintingRef.current = true;
+      paintFogAt(p);
+      return;
+    }
     if (tool === 'circle' || tool === 'square' || tool === 'cone') {
       setDrafting(p);
       return;
@@ -1199,6 +1236,11 @@ export default function MapBoard() {
     }
 
     const p = screenToLogical(e);
+
+    if (fogPaintingRef.current) {
+      paintFogAt(p);
+      return;
+    }
 
     if (draggingTokenId) {
       const sp = snap({ x: p.x - dragOffset.x, y: p.y - dragOffset.y });
@@ -1258,6 +1300,11 @@ export default function MapBoard() {
   const onMouseUp = (e: React.MouseEvent) => {
     if (isPanningRef.current) {
       isPanningRef.current = false;
+      return;
+    }
+    if (fogPaintingRef.current) {
+      fogPaintingRef.current = false;
+      if (currentSceneId) void commitFog(currentSceneId);
       return;
     }
     if (draggingTokenId) {
@@ -1646,6 +1693,7 @@ export default function MapBoard() {
               {toolButton('circle', CircleIcon, 'Circle AoE', true)}
               {toolButton('square', SquareIcon, 'Square AoE', true)}
               {toolButton('cone', Triangle, 'Cone AoE', true)}
+              {toolButton('fog', Cloud, 'Fog of war — paint to reveal/hide for players', true)}
             </div>
             <div className="flex gap-1 mt-1">
               <button
@@ -1836,6 +1884,78 @@ export default function MapBoard() {
                   />
                 ))}
               </div>
+            </div>
+          )}
+
+          {isGM && tool === 'fog' && currentScene && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wider text-slate-500">Fog of war</div>
+                <button
+                  onClick={() => currentSceneId && void setFogEnabled(currentSceneId, !currentScene.fog.enabled)}
+                  className={`px-2 py-0.5 text-[11px] rounded border ${
+                    currentScene.fog.enabled
+                      ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  {currentScene.fog.enabled ? 'On' : 'Off'}
+                </button>
+              </div>
+
+              {!currentScene.fog.enabled ? (
+                <div className="text-[11px] text-slate-500">
+                  Turn fog on, then drag on the map to reveal. Players see black where it's unrevealed; you see a dim tint.
+                </div>
+              ) : (
+                <>
+                  {/* Reveal vs hide */}
+                  <div className="flex rounded overflow-hidden border border-slate-800">
+                    {(['reveal', 'hide'] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => setFogMode(m)}
+                        className={`flex-1 py-1 text-[11px] flex items-center justify-center gap-1 ${
+                          fogMode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                        }`}
+                      >
+                        {m === 'reveal' ? <Eye size={12} /> : <EyeOff size={12} />}
+                        {m === 'reveal' ? 'Reveal' : 'Hide'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Brush size */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-500">Brush</span>
+                    <div className="flex gap-1">
+                      {[1, 3, 5].map((b) => (
+                        <button
+                          key={b}
+                          onClick={() => setFogBrush(b)}
+                          className={`w-7 py-0.5 text-[11px] rounded border font-mono ${
+                            fogBrush === b
+                              ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                          }`}
+                        >
+                          {b}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => currentSceneId && void clearFog(currentSceneId)}
+                    className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  >
+                    Cover everything again
+                  </button>
+                  <div className="text-[10px] text-slate-600">
+                    Drag on the map to {fogMode === 'reveal' ? 'reveal' : 're-hide'} squares.
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -2101,6 +2221,16 @@ export default function MapBoard() {
                 onTokenResizeStart={(resize, pos) => { setTokenResize(resize); setTokenResizePos(pos); }}
                 onRemoveToken={isGM ? (id) => void removeToken(id) : undefined}
               />
+
+              {/* Manual fog — above tokens so it covers them, below pings */}
+              {currentScene && (
+                <FogLayer
+                  fog={currentScene.fog}
+                  isGM={isGM}
+                  canvasW={canvasW}
+                  canvasH={canvasH}
+                />
+              )}
 
               {/* Ping pulses */}
               <PingsLayer pings={pings} zoom={zoom} />

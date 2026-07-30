@@ -58,9 +58,32 @@ export type ImageLayer = {
   hidden: boolean;
 };
 
+/**
+ * Manual fog of war (Phase 1). GM-authored, shared with the whole table.
+ *
+ * Stored as a set of revealed grid cells rather than freeform polygons: it's
+ * compact (the scene `data` jsonb has a realtime size cap — see the layer
+ * truncation guard below), bounded by the cell grid, and trivial to paint and
+ * erase. `cell` is pinned with the fog so changing the map's display grid later
+ * doesn't shift already-revealed squares. `revealed` holds "col,row" keys;
+ * everything not listed is fogged. Turning fog off reveals the whole map, so
+ * there's no need to store a full reveal-all set.
+ */
+export type FogData = {
+  enabled: boolean;
+  /** Fog cell size in logical units. */
+  cell: number;
+  /** Revealed cells as "col,row" keys. */
+  revealed: string[];
+};
+
+export const DEFAULT_FOG_CELL = 50;
+export const defaultFog = (): FogData => ({ enabled: false, cell: DEFAULT_FOG_CELL, revealed: [] });
+
 type SceneData = {
   shapes?: MapShape[];
   layers?: ImageLayer[];
+  fog?: FogData;
 };
 
 export type MapScene = {
@@ -73,6 +96,7 @@ export type MapScene = {
   height: number;
   shapes: MapShape[];
   layers: ImageLayer[];
+  fog: FogData;
 };
 
 export type MapState = {
@@ -172,11 +196,12 @@ function rowToScene(r: SceneRow): MapScene {
     height: r.height ?? DEFAULT_CANVAS_H,
     shapes: d.shapes ?? [],
     layers: d.layers ?? [],
+    fog: d.fog ?? defaultFog(),
   };
 }
 
-function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers'>): SceneData {
-  return { shapes: s.shapes, layers: s.layers };
+function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog'>): SceneData {
+  return { shapes: s.shapes, layers: s.layers, fog: s.fog };
 }
 
 function rowToState(r: StateRow): MapState {
@@ -218,6 +243,16 @@ type MapStore = {
   updateShape: (sceneId: string, shape: MapShape) => Promise<void>;
   removeShape: (sceneId: string, shapeId: string) => Promise<void>;
   clearShapes: (sceneId: string) => Promise<void>;
+
+  // ── Fog of war (per-scene) ───────────────────────────────────────────────
+  setFogEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
+  /** Add/remove revealed cells in local state only — used during a paint drag
+   *  so painting stays instant. Call commitFog on drag-end to persist. */
+  paintFogLocal: (sceneId: string, cells: string[], reveal: boolean) => void;
+  /** Persist the scene's current fog to the DB (fans out via realtime). */
+  commitFog: (sceneId: string) => Promise<void>;
+  /** Fog everything again (clear all revealed cells). */
+  clearFog: (sceneId: string) => Promise<void>;
 
   // ── Tokens ──────────────────────────────────────────────────────────────
   addToken: (campaignId: string, t: Omit<MapToken, 'id'>) => Promise<string | null>;
@@ -336,7 +371,7 @@ export const useMap = create<MapStore>((set, get) => ({
             const truncated = existing && newRow.data == null;
             const incoming = rowToScene(newRow);
             const merged: MapScene = truncated
-              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers }
+              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog }
               : incoming;
             set({
               scenes: scenes
@@ -611,6 +646,58 @@ export const useMap = create<MapStore>((set, get) => ({
     });
     try {
       await mutateSceneData(sceneId, () => ({ shapes: [] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  // ── Fog of war ────────────────────────────────────────────────────────────
+  setFogEnabled: async (sceneId, enabled) => {
+    const prev = get().scenes;
+    // On first enable (nothing revealed yet) snap the fog grid to the scene's
+    // display grid so painted squares line up with what the GM sees. Once
+    // cells exist, keep the pinned size so they don't shift.
+    const apply = (s: MapScene): FogData => ({
+      ...s.fog,
+      enabled,
+      cell: enabled && s.fog.revealed.length === 0 ? s.grid_size || DEFAULT_FOG_CELL : s.fog.cell,
+    });
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: apply(s) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ fog: apply(s) }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  paintFogLocal: (sceneId, cells, reveal) => {
+    set({
+      scenes: get().scenes.map((s) => {
+        if (s.id !== sceneId) return s;
+        const next = new Set(s.fog.revealed);
+        if (reveal) for (const c of cells) next.add(c);
+        else for (const c of cells) next.delete(c);
+        return { ...s, fog: { ...s.fog, revealed: [...next] } };
+      }),
+    });
+  },
+
+  commitFog: async (sceneId) => {
+    const scene = get().scenes.find((s) => s.id === sceneId);
+    if (!scene) return;
+    const fog = scene.fog; // persist the locally-painted set
+    try {
+      await mutateSceneData(sceneId, () => ({ fog }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  clearFog: async (sceneId) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, revealed: [] } } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, revealed: [] } }));
     } catch (e) {
       set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
     }
