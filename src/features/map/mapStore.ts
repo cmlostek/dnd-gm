@@ -34,6 +34,10 @@ export type MapToken = {
   /** Active condition slugs (e.g. 'poisoned', 'prone'). Matches CONDITIONS
    *  index from src/data/conditions.ts. Drawn as overlay chips on the token. */
   conditions?: string[];
+  /** Light/vision radius (Phase 4). A token carrying a torch or with darkvision
+   *  reveals a wall-bounded disc this far around itself in a dark scene — the
+   *  light moves with the token. 0/undefined = none. */
+  lightRadius?: number;
 };
 
 export type MapShape =
@@ -150,6 +154,7 @@ type TokenData = {
   maxHp?: number;
   damageLog?: DamageLogEntry[];
   conditions?: string[];
+  lightRadius?: number;
 };
 
 type TokenRow = {
@@ -208,16 +213,18 @@ function rowToToken(r: TokenRow): MapToken {
     maxHp: r.data?.maxHp,
     damageLog: r.data?.damageLog,
     conditions: r.data?.conditions ?? [],
+    lightRadius: r.data?.lightRadius,
   };
 }
 
-function tokenDataPayload(t: Pick<MapToken, 'emoji' | 'hp' | 'maxHp' | 'damageLog' | 'conditions'>): TokenData {
+function tokenDataPayload(t: Pick<MapToken, 'emoji' | 'hp' | 'maxHp' | 'damageLog' | 'conditions' | 'lightRadius'>): TokenData {
   const d: TokenData = {};
   if (t.emoji) d.emoji = t.emoji;
   if (t.hp != null) d.hp = t.hp;
   if (t.maxHp != null) d.maxHp = t.maxHp;
   if (t.damageLog && t.damageLog.length > 0) d.damageLog = t.damageLog;
   if (t.conditions && t.conditions.length > 0) d.conditions = t.conditions;
+  if (t.lightRadius) d.lightRadius = t.lightRadius;
   return d;
 }
 
@@ -915,7 +922,7 @@ export const useMap = create<MapStore>((set, get) => ({
     if ('owner_user_id' in patch) row.owner_user_id = next.owner_user_id;
     if ('scene_id' in patch) row.scene_id = next.scene_id;
     if ('hidden_from_players' in patch) row.hidden_from_players = next.hidden_from_players;
-    if ('emoji' in patch || 'hp' in patch || 'maxHp' in patch || 'damageLog' in patch || 'conditions' in patch) {
+    if ('emoji' in patch || 'hp' in patch || 'maxHp' in patch || 'damageLog' in patch || 'conditions' in patch || 'lightRadius' in patch) {
       row.data = tokenDataPayload(next);
     }
 

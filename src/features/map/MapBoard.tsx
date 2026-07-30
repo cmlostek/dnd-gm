@@ -1529,15 +1529,31 @@ export default function MapBoard() {
   const ambientDark = currentScene?.fog.ambientDark ?? false;
   const lights = currentScene?.lights;
   const lightAreas = useMemo<LightArea[]>(() => {
-    if (!fogEnabled || sceneFogMode !== 'dynamic' || !ambientDark || !walls || !lights) return [];
-    return lights.map((l) => ({
+    if (!fogEnabled || sceneFogMode !== 'dynamic' || !ambientDark || !walls) return [];
+    // Placed scene lights…
+    const scene = (lights ?? []).map((l) => ({
       id: l.id,
       cx: l.x,
       cy: l.y,
       radius: l.radius,
       poly: computeVisibility({ x: l.x, y: l.y }, walls, canvasW, canvasH),
     }));
-  }, [fogEnabled, sceneFogMode, ambientDark, walls, lights, canvasW, canvasH]);
+    // …plus lights carried by tokens (torches / darkvision), which move with
+    // them. Committed positions so this recomputes on drag-end, like sight.
+    const carried = tokens
+      .filter((t) => {
+        const onScene = t.scene_id ? t.scene_id === currentSceneId : currentSceneId === state.active_scene_id;
+        return onScene && (t.lightRadius ?? 0) > 0;
+      })
+      .map((t) => ({
+        id: `tok-${t.id}`,
+        cx: t.x,
+        cy: t.y,
+        radius: t.lightRadius as number,
+        poly: computeVisibility({ x: t.x, y: t.y }, walls, canvasW, canvasH),
+      }));
+    return [...scene, ...carried];
+  }, [fogEnabled, sceneFogMode, ambientDark, walls, lights, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
 
   // Sidebar order: match each token to an initiative combatant by name
   // (case-insensitive) and use that initiative as the sort key — highest
@@ -2224,6 +2240,28 @@ export default function MapBoard() {
                           onChange={(e) => {
                             const n = Math.max(10, parseInt(e.target.value || '0', 10) || 0);
                             if (n !== t.size) void updateToken(t.id, { size: n });
+                          }}
+                          className="w-14 bg-slate-950 border border-slate-800 rounded px-1 py-0.5 font-mono text-[10px]"
+                        />
+                        <span className="text-slate-700">px</span>
+                      </label>
+                    )}
+                    {isGM && (
+                      <label
+                        className="flex items-center gap-1.5 text-[10px] text-slate-500"
+                        title="Light/vision radius — reveals a wall-bounded area around this token in a dark scene. 0 = none."
+                      >
+                        <span className="uppercase tracking-wider flex items-center gap-1">
+                          <Lightbulb size={10} /> Light
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={10}
+                          value={t.lightRadius ?? 0}
+                          onChange={(e) => {
+                            const n = Math.max(0, parseInt(e.target.value || '0', 10) || 0);
+                            if (n !== (t.lightRadius ?? 0)) void updateToken(t.id, { lightRadius: n });
                           }}
                           className="w-14 bg-slate-950 border border-slate-800 rounded px-1 py-0.5 font-mono text-[10px]"
                         />
