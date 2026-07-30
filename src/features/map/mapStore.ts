@@ -71,14 +71,24 @@ export type ImageLayer = {
  */
 export type FogData = {
   enabled: boolean;
+  /** 'manual' = GM paints reveal/hide; 'dynamic' = party line-of-sight (Phase 2c). */
+  mode: 'manual' | 'dynamic';
   /** Fog cell size in logical units. */
   cell: number;
-  /** Revealed cells as "col,row" keys. */
+  /** Revealed cells as "col,row" keys (manual mode). */
   revealed: string[];
+  /** Cells the party has ever seen (dynamic mode) — stay dimly lit. */
+  explored: string[];
 };
 
 export const DEFAULT_FOG_CELL = 50;
-export const defaultFog = (): FogData => ({ enabled: false, cell: DEFAULT_FOG_CELL, revealed: [] });
+export const defaultFog = (): FogData => ({
+  enabled: false,
+  mode: 'manual',
+  cell: DEFAULT_FOG_CELL,
+  revealed: [],
+  explored: [],
+});
 
 /**
  * A sight-blocking wall segment (Phase 2). GM-authored, never shown to players;
@@ -205,7 +215,8 @@ function rowToScene(r: SceneRow): MapScene {
     height: r.height ?? DEFAULT_CANVAS_H,
     shapes: d.shapes ?? [],
     layers: d.layers ?? [],
-    fog: d.fog ?? defaultFog(),
+    // Merge over defaults so pre-Phase-2c fog rows gain mode/explored.
+    fog: { ...defaultFog(), ...(d.fog ?? {}) },
     walls: d.walls ?? [],
   };
 }
@@ -261,6 +272,7 @@ type MapStore = {
 
   // ── Fog of war (per-scene) ───────────────────────────────────────────────
   setFogEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
+  setFogMode: (sceneId: string, mode: 'manual' | 'dynamic') => Promise<void>;
   /** Add/remove revealed cells in local state only — used during a paint drag
    *  so painting stays instant. Call commitFog on drag-end to persist. */
   paintFogLocal: (sceneId: string, cells: string[], reveal: boolean) => void;
@@ -711,6 +723,16 @@ export const useMap = create<MapStore>((set, get) => ({
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: apply(s) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: apply(s) }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  setFogMode: async (sceneId, mode) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, mode } } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, mode } }));
     } catch (e) {
       set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
     }

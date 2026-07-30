@@ -1,56 +1,76 @@
 import type { FogData } from '../../mapStore';
+import { polygonToPoints, type Vec } from '../../vision/visibility';
 
 /**
- * Manual fog of war overlay.
+ * Fog of war overlay — manual or dynamic.
  *
- * A dark rectangle covers the whole canvas; an SVG mask punches holes where the
- * GM has revealed cells (white = fog shows, black cell = hole). Players get a
- * near-opaque overlay, so anything unrevealed — including tokens sitting in the
- * dark — is hidden. The GM gets a translucent tint instead, so they still see
- * the entire map but can tell at a glance what the party can and can't see.
+ * A dark rectangle covers the canvas; an SVG mask decides where it shows.
+ * Mask luminance drives the overlay's alpha: white = full fog, black = clear,
+ * grey = the dim "explored but not currently seen" tier.
  *
- * Renders above tokens (so fog actually covers them) but below pings. Pure and
- * prop-driven; the shared/authored fog state lives in the scene.
+ *  - manual:  white base, black holes at revealed cells.
+ *  - dynamic: white base, grey at explored cells, black inside the party's
+ *             current line-of-sight polygons (drawn last so sight wins).
+ *
+ * Players get a near-opaque overlay (unseen = black, hiding tokens in the
+ * dark); the GM gets a translucent tint so they still see the whole map while
+ * reading what the party can. Renders above tokens, below pings. Pure.
  */
 export default function FogLayer({
   fog,
   isGM,
   canvasW,
   canvasH,
+  visionPolys = [],
 }: {
   fog: FogData;
   isGM: boolean;
   canvasW: number;
   canvasH: number;
+  /** Current party line-of-sight polygons (dynamic mode). */
+  visionPolys?: Vec[][];
 }) {
   if (!fog.enabled) return null;
 
   const cell = fog.cell || 50;
-  // Inflate each revealed cell slightly so adjacent squares overlap and don't
-  // leave hairline fog seams between them from mask anti-aliasing.
-  const e = 0.75;
+  const e = 0.75; // cell inflation to avoid mask seams
+  const dynamic = fog.mode === 'dynamic';
+
+  const cellRect = (key: string, fill: string) => {
+    const [cx, cy] = key.split(',').map(Number);
+    if (Number.isNaN(cx) || Number.isNaN(cy)) return null;
+    return (
+      <rect
+        key={`${fill}-${key}`}
+        x={cx * cell - e}
+        y={cy * cell - e}
+        width={cell + 2 * e}
+        height={cell + 2 * e}
+        fill={fill}
+      />
+    );
+  };
 
   return (
     <g pointerEvents="none">
       <defs>
         <mask id="map-fog-mask" maskUnits="userSpaceOnUse" x={0} y={0} width={canvasW} height={canvasH}>
-          {/* White = overlay visible (fogged) everywhere by default. */}
+          {/* Base: everything fogged. */}
           <rect x={0} y={0} width={canvasW} height={canvasH} fill="#ffffff" />
-          {/* Black = revealed holes where the overlay is cut away. */}
-          {fog.revealed.map((key) => {
-            const [cx, cy] = key.split(',').map(Number);
-            if (Number.isNaN(cx) || Number.isNaN(cy)) return null;
-            return (
-              <rect
-                key={key}
-                x={cx * cell - e}
-                y={cy * cell - e}
-                width={cell + 2 * e}
-                height={cell + 2 * e}
-                fill="#000000"
-              />
-            );
-          })}
+
+          {dynamic ? (
+            <>
+              {/* Explored-but-unseen → grey (dim). */}
+              {fog.explored.map((key) => cellRect(key, '#808080'))}
+              {/* Current line of sight → black (clear). Drawn last so it wins. */}
+              {visionPolys.map((poly, i) =>
+                poly.length >= 3 ? <polygon key={i} points={polygonToPoints(poly)} fill="#000000" /> : null,
+              )}
+            </>
+          ) : (
+            // Manual: revealed cells → black (clear).
+            fog.revealed.map((key) => cellRect(key, '#000000'))
+          )}
         </mask>
       </defs>
       <rect

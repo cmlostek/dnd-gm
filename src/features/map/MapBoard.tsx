@@ -8,6 +8,7 @@ import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
 import FogLayer from './canvas/layers/FogLayer';
 import WallsLayer from './canvas/layers/WallsLayer';
+import { computeVisibility, type Vec } from './vision/visibility';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
@@ -446,6 +447,7 @@ export default function MapBoard() {
   const updateToken = useMap((s) => s.updateToken);
   const removeToken = useMap((s) => s.removeToken);
   const setFogEnabled = useMap((s) => s.setFogEnabled);
+  const setSceneFogMode = useMap((s) => s.setFogMode);
   const paintFogLocal = useMap((s) => s.paintFogLocal);
   const commitFog = useMap((s) => s.commitFog);
   const clearFog = useMap((s) => s.clearFog);
@@ -1474,6 +1476,20 @@ export default function MapBoard() {
       return t;
     });
 
+  // Dynamic line of sight: one visibility polygon per party token (owned =
+  // PC), unioned at render time into the fog mask. Computed from committed
+  // token positions (not localDrag) so it recomputes on drag-end rather than
+  // every mousemove — the O(endpoints×walls) cost isn't worth per-frame.
+  const visionPolys = useMemo<Vec[][]>(() => {
+    if (!currentScene || !currentScene.fog.enabled || currentScene.fog.mode !== 'dynamic') return [];
+    const walls = currentScene.walls;
+    const origins = tokens.filter((t) => {
+      const onScene = t.scene_id ? t.scene_id === currentSceneId : currentSceneId === state.active_scene_id;
+      return onScene && !!t.owner_user_id;
+    });
+    return origins.map((t) => computeVisibility({ x: t.x, y: t.y }, walls, canvasW, canvasH));
+  }, [currentScene, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
+
   // Sidebar order: match each token to an initiative combatant by name
   // (case-insensitive) and use that initiative as the sort key — highest
   // first, ties broken by turn_order so the in-encounter sequence is stable.
@@ -1934,55 +1950,78 @@ export default function MapBoard() {
 
               {!currentScene.fog.enabled ? (
                 <div className="text-[11px] text-slate-500">
-                  Turn fog on, then drag on the map to reveal. Players see black where it's unrevealed; you see a dim tint.
+                  Turn fog on, then pick how it's driven. Players see black where it's hidden; you see a dim tint.
                 </div>
               ) : (
                 <>
-                  {/* Reveal vs hide */}
+                  {/* Manual paint vs dynamic line-of-sight */}
                   <div className="flex rounded overflow-hidden border border-slate-800">
-                    {(['reveal', 'hide'] as const).map((m) => (
+                    {(['manual', 'dynamic'] as const).map((m) => (
                       <button
                         key={m}
-                        onClick={() => setFogMode(m)}
-                        className={`flex-1 py-1 text-[11px] flex items-center justify-center gap-1 ${
-                          fogMode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                        onClick={() => currentSceneId && void setSceneFogMode(currentSceneId, m)}
+                        className={`flex-1 py-1 text-[11px] ${
+                          currentScene.fog.mode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
                         }`}
                       >
-                        {m === 'reveal' ? <Eye size={12} /> : <EyeOff size={12} />}
-                        {m === 'reveal' ? 'Reveal' : 'Hide'}
+                        {m === 'manual' ? 'Paint by hand' : 'Line of sight'}
                       </button>
                     ))}
                   </div>
 
-                  {/* Brush size */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-500">Brush</span>
-                    <div className="flex gap-1">
-                      {[1, 3, 5].map((b) => (
-                        <button
-                          key={b}
-                          onClick={() => setFogBrush(b)}
-                          className={`w-7 py-0.5 text-[11px] rounded border font-mono ${
-                            fogBrush === b
-                              ? 'bg-sky-900/40 border-sky-700 text-sky-200'
-                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
-                          }`}
-                        >
-                          {b}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  {currentScene.fog.mode === 'manual' ? (
+                    <>
+                      {/* Reveal vs hide */}
+                      <div className="flex rounded overflow-hidden border border-slate-800">
+                        {(['reveal', 'hide'] as const).map((m) => (
+                          <button
+                            key={m}
+                            onClick={() => setFogMode(m)}
+                            className={`flex-1 py-1 text-[11px] flex items-center justify-center gap-1 ${
+                              fogMode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                            }`}
+                          >
+                            {m === 'reveal' ? <Eye size={12} /> : <EyeOff size={12} />}
+                            {m === 'reveal' ? 'Reveal' : 'Hide'}
+                          </button>
+                        ))}
+                      </div>
 
-                  <button
-                    onClick={() => currentSceneId && void clearFog(currentSceneId)}
-                    className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                  >
-                    Cover everything again
-                  </button>
-                  <div className="text-[10px] text-slate-600">
-                    Drag on the map to {fogMode === 'reveal' ? 'reveal' : 're-hide'} squares.
-                  </div>
+                      {/* Brush size */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-slate-500">Brush</span>
+                        <div className="flex gap-1">
+                          {[1, 3, 5].map((b) => (
+                            <button
+                              key={b}
+                              onClick={() => setFogBrush(b)}
+                              className={`w-7 py-0.5 text-[11px] rounded border font-mono ${
+                                fogBrush === b
+                                  ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                              }`}
+                            >
+                              {b}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => currentSceneId && void clearFog(currentSceneId)}
+                        className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      >
+                        Cover everything again
+                      </button>
+                      <div className="text-[10px] text-slate-600">
+                        Drag on the map to {fogMode === 'reveal' ? 'reveal' : 're-hide'} squares.
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[10px] text-slate-600 leading-relaxed">
+                      Sight is cast from each party token against your walls ({currentScene.walls.length}). Draw walls with the Walls tool. Move a token to update what the party sees.
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -2278,6 +2317,7 @@ export default function MapBoard() {
                   isGM={isGM}
                   canvasW={canvasW}
                   canvasH={canvasH}
+                  visionPolys={visionPolys}
                 />
               )}
 
