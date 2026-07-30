@@ -79,6 +79,12 @@ export type FogData = {
   revealed: string[];
   /** Cells the party has ever seen (dynamic mode) — stay dimly lit. */
   explored: string[];
+  /**
+   * Scene darkness (Phase 3, dynamic mode). Off = daylight: line of sight
+   * reveals everything. On = the party sees only where sight AND light overlap;
+   * lit areas come from placed lights, themselves wall-bounded.
+   */
+  ambientDark: boolean;
 };
 
 export const DEFAULT_FOG_CELL = 50;
@@ -88,7 +94,17 @@ export const defaultFog = (): FogData => ({
   cell: DEFAULT_FOG_CELL,
   revealed: [],
   explored: [],
+  ambientDark: false,
 });
+
+/**
+ * A light source (Phase 3). GM-placed; illuminates a radius, wall-bounded.
+ * In a dark scene the party sees only where their line of sight overlaps lit
+ * area. `radius` is in logical units.
+ */
+export type MapLight = { id: string; x: number; y: number; radius: number; color?: string };
+
+export const DEFAULT_LIGHT_RADIUS = 150;
 
 /**
  * A sight-blocking wall segment (Phase 2). GM-authored, never shown to players;
@@ -102,6 +118,7 @@ type SceneData = {
   layers?: ImageLayer[];
   fog?: FogData;
   walls?: MapWall[];
+  lights?: MapLight[];
 };
 
 export type MapScene = {
@@ -116,6 +133,7 @@ export type MapScene = {
   layers: ImageLayer[];
   fog: FogData;
   walls: MapWall[];
+  lights: MapLight[];
 };
 
 export type MapState = {
@@ -215,14 +233,15 @@ function rowToScene(r: SceneRow): MapScene {
     height: r.height ?? DEFAULT_CANVAS_H,
     shapes: d.shapes ?? [],
     layers: d.layers ?? [],
-    // Merge over defaults so pre-Phase-2c fog rows gain mode/explored.
+    // Merge over defaults so pre-Phase-2c fog rows gain mode/explored/ambientDark.
     fog: { ...defaultFog(), ...(d.fog ?? {}) },
     walls: d.walls ?? [],
+    lights: d.lights ?? [],
   };
 }
 
-function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog' | 'walls'>): SceneData {
-  return { shapes: s.shapes, layers: s.layers, fog: s.fog, walls: s.walls };
+function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog' | 'walls' | 'lights'>): SceneData {
+  return { shapes: s.shapes, layers: s.layers, fog: s.fog, walls: s.walls, lights: s.lights };
 }
 
 function rowToState(r: StateRow): MapState {
@@ -269,6 +288,13 @@ type MapStore = {
   addWall: (sceneId: string, wall: MapWall) => Promise<void>;
   removeWall: (sceneId: string, wallId: string) => Promise<void>;
   clearWalls: (sceneId: string) => Promise<void>;
+
+  // ── Lights (per-scene) ───────────────────────────────────────────────────
+  addLight: (sceneId: string, light: MapLight) => Promise<void>;
+  updateLight: (sceneId: string, light: MapLight) => Promise<void>;
+  removeLight: (sceneId: string, lightId: string) => Promise<void>;
+  clearLights: (sceneId: string) => Promise<void>;
+  setAmbientDark: (sceneId: string, dark: boolean) => Promise<void>;
 
   // ── Fog of war (per-scene) ───────────────────────────────────────────────
   setFogEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
@@ -401,7 +427,7 @@ export const useMap = create<MapStore>((set, get) => ({
             const truncated = existing && newRow.data == null;
             const incoming = rowToScene(newRow);
             const merged: MapScene = truncated
-              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog, walls: existing!.walls }
+              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog, walls: existing!.walls, lights: existing!.lights }
               : incoming;
             set({
               scenes: scenes
@@ -707,6 +733,57 @@ export const useMap = create<MapStore>((set, get) => ({
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [] } : s)) });
     try {
       await mutateSceneData(sceneId, () => ({ walls: [] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  // ── Lights ───────────────────────────────────────────────────────────────
+  addLight: async (sceneId, light) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: [...s.lights, light] } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ lights: [...s.lights, light] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  updateLight: async (sceneId, light) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: s.lights.map((l) => (l.id === light.id ? light : l)) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ lights: s.lights.map((l) => (l.id === light.id ? light : l)) }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  removeLight: async (sceneId, lightId) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: s.lights.filter((l) => l.id !== lightId) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ lights: s.lights.filter((l) => l.id !== lightId) }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  clearLights: async (sceneId) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: [] } : s)) });
+    try {
+      await mutateSceneData(sceneId, () => ({ lights: [] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  setAmbientDark: async (sceneId, dark) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, ambientDark: dark } } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, ambientDark: dark } }));
     } catch (e) {
       set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
     }

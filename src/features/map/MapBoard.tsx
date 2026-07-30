@@ -8,7 +8,10 @@ import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
 import FogLayer from './canvas/layers/FogLayer';
 import WallsLayer from './canvas/layers/WallsLayer';
+import LightsLayer from './canvas/layers/LightsLayer';
+import type { LightArea } from './canvas/layers/FogLayer';
 import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
+import { DEFAULT_LIGHT_RADIUS } from './mapStore';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
@@ -55,9 +58,10 @@ import {
   Pencil,
   Cloud,
   BrickWall,
+  Lightbulb,
 } from 'lucide-react';
 
-type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog' | 'wall';
+type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog' | 'wall' | 'light';
 
 type Ping = { id: string; x: number; y: number; color: string };
 type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' };
@@ -454,6 +458,10 @@ export default function MapBoard() {
   const addWall = useMap((s) => s.addWall);
   const removeWall = useMap((s) => s.removeWall);
   const clearWalls = useMap((s) => s.clearWalls);
+  const addLight = useMap((s) => s.addLight);
+  const removeLight = useMap((s) => s.removeLight);
+  const clearLights = useMap((s) => s.clearLights);
+  const setAmbientDark = useMap((s) => s.setAmbientDark);
 
   // The GM may stage a non-active scene by setting gm_preview_scene_id; their
   // local view follows that, while players always render the active scene.
@@ -482,6 +490,8 @@ export default function MapBoard() {
   const [fogMode, setFogMode] = useState<'reveal' | 'hide'>('reveal');
   const [fogBrush, setFogBrush] = useState(3);
   const fogPaintingRef = useRef(false);
+  // Radius applied to newly-placed lights.
+  const [lightRadius, setLightRadius] = useState(DEFAULT_LIGHT_RADIUS);
   const [ruler, setRuler] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const [drafting, setDrafting] = useState<{ x: number; y: number } | null>(null);
   // Live cursor position while drafting a shape — drives the dashed preview
@@ -1233,6 +1243,10 @@ export default function MapBoard() {
       setDrafting({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
       return;
     }
+    if (tool === 'light') {
+      if (currentSceneId) void addLight(currentSceneId, { id: uid(), x: p.x, y: p.y, radius: lightRadius });
+      return;
+    }
     if (tool === 'circle' || tool === 'square' || tool === 'cone') {
       setDrafting(p);
       return;
@@ -1510,6 +1524,21 @@ export default function MapBoard() {
     if (added.length) void addExplored(currentSceneId, added);
   }, [visionPolys, fogEnabled, sceneFogMode, currentSceneId, canvasW, canvasH, addExplored]);
 
+  // Light illumination areas (dark scenes only): each light's radius disc,
+  // wall-bounded via its own visibility polygon. Only computed when it matters.
+  const ambientDark = currentScene?.fog.ambientDark ?? false;
+  const lights = currentScene?.lights;
+  const lightAreas = useMemo<LightArea[]>(() => {
+    if (!fogEnabled || sceneFogMode !== 'dynamic' || !ambientDark || !walls || !lights) return [];
+    return lights.map((l) => ({
+      id: l.id,
+      cx: l.x,
+      cy: l.y,
+      radius: l.radius,
+      poly: computeVisibility({ x: l.x, y: l.y }, walls, canvasW, canvasH),
+    }));
+  }, [fogEnabled, sceneFogMode, ambientDark, walls, lights, canvasW, canvasH]);
+
   // Sidebar order: match each token to an initiative combatant by name
   // (case-insensitive) and use that initiative as the sort key — highest
   // first, ties broken by turn_order so the in-encounter sequence is stable.
@@ -1759,6 +1788,7 @@ export default function MapBoard() {
               {toolButton('cone', Triangle, 'Cone AoE', true)}
               {toolButton('fog', Cloud, 'Fog of war — paint to reveal/hide for players', true)}
               {toolButton('wall', BrickWall, 'Walls — draw sight blockers (players never see them)', true)}
+              {toolButton('light', Lightbulb, 'Lights — click to place; needed to see in a dark scene', true)}
             </div>
             <div className="flex gap-1 mt-1">
               <button
@@ -2077,6 +2107,59 @@ export default function MapBoard() {
             </div>
           )}
 
+          {isGM && tool === 'light' && currentScene && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wider text-slate-500">Lights</div>
+                <span className="text-[11px] text-slate-500 font-mono">{currentScene.lights.length}</span>
+              </div>
+
+              {/* Scene darkness — lights only matter when the scene is dark */}
+              <button
+                onClick={() => currentSceneId && void setAmbientDark(currentSceneId, !currentScene.fog.ambientDark)}
+                className={`w-full py-1 text-[11px] rounded border ${
+                  currentScene.fog.ambientDark
+                    ? 'bg-indigo-900/40 border-indigo-700 text-indigo-200'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                {currentScene.fog.ambientDark ? 'Scene is dark' : 'Scene is lit (daylight)'}
+              </button>
+
+              {/* New-light radius */}
+              <label className="flex items-center gap-2 text-[11px] text-slate-500">
+                Radius
+                <input
+                  type="range"
+                  min={40}
+                  max={600}
+                  step={10}
+                  value={lightRadius}
+                  onChange={(e) => setLightRadius(parseInt(e.target.value, 10))}
+                  className="flex-1 accent-amber-500"
+                />
+                <span className="font-mono text-slate-400 w-9 text-right">{lightRadius}</span>
+              </label>
+
+              <div className="text-[10px] text-slate-600 leading-relaxed">
+                {currentScene.fog.mode === 'dynamic'
+                  ? currentScene.fog.ambientDark
+                    ? 'Click to drop a light. In the dark the party sees only where their sight overlaps a light. Double-click a light to remove it.'
+                    : 'Turn the scene dark (above) for lights to matter — in daylight, sight reveals everything.'
+                  : 'Lights apply in Line-of-sight fog mode. Switch fog to Line of sight, then darken the scene.'}
+              </div>
+
+              {currentScene.lights.length > 0 && (
+                <button
+                  onClick={() => currentSceneId && void clearLights(currentSceneId)}
+                  className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                >
+                  Clear all lights
+                </button>
+              )}
+            </div>
+          )}
+
           <div>
             <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">
               Tokens ({sidebarTokens.length})
@@ -2348,6 +2431,16 @@ export default function MapBoard() {
                   canvasW={canvasW}
                   canvasH={canvasH}
                   visionPolys={visionPolys}
+                  lightAreas={lightAreas}
+                />
+              )}
+
+              {/* Light markers — GM only, above fog */}
+              {isGM && currentScene && (
+                <LightsLayer
+                  lights={currentScene.lights}
+                  zoom={zoom}
+                  onRemoveLight={currentSceneId ? (id) => void removeLight(currentSceneId, id) : undefined}
                 />
               )}
 
