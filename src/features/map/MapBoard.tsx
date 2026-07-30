@@ -3,6 +3,9 @@ import { useSearchParams } from 'react-router-dom';
 import { useMap, MAX_DAMAGE_LOG, type DamageLogEntry, type MapShape, type MapToken, type MapScene } from './mapStore';
 import GridLayer from './canvas/layers/GridLayer';
 import PingsLayer from './canvas/layers/PingsLayer';
+import ImageLayers from './canvas/layers/ImageLayers';
+import ShapesLayer from './canvas/layers/ShapesLayer';
+import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
 
@@ -468,20 +471,14 @@ export default function MapBoard() {
   // Shape drag state — { id, ox, oy } where ox/oy are the offsets from the
   // shape's anchor to the mouse-down point, so the shape doesn't snap to
   // the cursor on grab.
-  const [shapeDrag, setShapeDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
-  const [shapeDragPos, setShapeDragPos] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [shapeDrag, setShapeDrag] = useState<ShapeDrag | null>(null);
+  const [shapeDragPos, setShapeDragPos] = useState<ShapeDragPos | null>(null);
   // Image-layer drag state. `mode` is either 'move' (translate x/y) or
   // 'resize' (grow w/h from the bottom-right corner). ox/oy is the offset
   // from the anchor point to the mouse-down so the layer doesn't snap to
   // the cursor on grab.
-  const [layerDrag, setLayerDrag] = useState<
-    | { id: string; mode: 'move'; ox: number; oy: number }
-    | { id: string; mode: 'resize'; ox: number; oy: number; startW: number; startH: number; startX: number; startY: number }
-    | null
-  >(null);
-  const [layerDragPos, setLayerDragPos] = useState<
-    { id: string; x: number; y: number; w: number; h: number } | null
-  >(null);
+  const [layerDrag, setLayerDrag] = useState<LayerDrag | null>(null);
+  const [layerDragPos, setLayerDragPos] = useState<LayerDragPos | null>(null);
   // Token resize state — the GM grabs the bottom-right of a token in Edit
   // mode to scale its diameter. We use the dominant axis (max of dx/dy) so
   // square-ish drags feel predictable; the token is a circle so width and
@@ -2040,99 +2037,15 @@ export default function MapBoard() {
                   underneath later ones. In select mode the GM can drag a
                   layer to reposition it and use the bottom-right handle to
                   resize. */}
-              {sceneLayers.map((layer) => {
-                if (layer.hidden && !isGM) return null;
-                // Layer drag/resize is gated on the dedicated Layers tool so
-                // the default Select tool can keep grabbing tokens and shapes
-                // without the GM accidentally moving the battlemat under them.
-                const draggable = isGM && tool === 'edit';
-                const live = layerDragPos && layerDragPos.id === layer.id;
-                const lx = live ? layerDragPos.x : layer.x;
-                const ly = live ? layerDragPos.y : layer.y;
-                const lw = live ? layerDragPos.w : layer.w;
-                const lh = live ? layerDragPos.h : layer.h;
-                const handleR = Math.max(6, 10 / zoom);
-                return (
-                  <g key={layer.id}>
-                    <image
-                      href={layer.url}
-                      x={lx}
-                      y={ly}
-                      width={lw}
-                      height={lh}
-                      preserveAspectRatio="none"
-                      opacity={layer.hidden ? 0.25 : 1}
-                      transform={
-                        layer.rotation
-                          ? `rotate(${layer.rotation} ${lx + lw / 2} ${ly + lh / 2})`
-                          : undefined
-                      }
-                      pointerEvents={draggable ? 'all' : 'none'}
-                      style={{ cursor: draggable ? (live ? 'grabbing' : 'move') : 'default' }}
-                      onMouseDown={
-                        draggable
-                          ? (e) => {
-                              e.stopPropagation();
-                              const p = screenToLogical(e);
-                              setLayerDrag({
-                                id: layer.id,
-                                mode: 'move',
-                                ox: p.x - layer.x,
-                                oy: p.y - layer.y,
-                              });
-                              setLayerDragPos({ id: layer.id, x: layer.x, y: layer.y, w: layer.w, h: layer.h });
-                            }
-                          : undefined
-                      }
-                    />
-                    {/* Bottom-right resize handle — only shown to the GM in
-                        select mode so it doesn't clutter the player view. */}
-                    {draggable && (
-                      <>
-                        <rect
-                          x={lx + lw - handleR}
-                          y={ly + lh - handleR}
-                          width={handleR * 2}
-                          height={handleR * 2}
-                          fill="#0ea5e9"
-                          stroke="#fafaf9"
-                          strokeWidth={1 / zoom}
-                          style={{ cursor: 'nwse-resize' }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            const p = screenToLogical(e);
-                            setLayerDrag({
-                              id: layer.id,
-                              mode: 'resize',
-                              ox: p.x - (layer.x + layer.w),
-                              oy: p.y - (layer.y + layer.h),
-                              startW: layer.w,
-                              startH: layer.h,
-                              startX: layer.x,
-                              startY: layer.y,
-                            });
-                            setLayerDragPos({ id: layer.id, x: layer.x, y: layer.y, w: layer.w, h: layer.h });
-                          }}
-                        />
-                        {/* Thin selection border so it's obvious which layer
-                            the corner handle belongs to when several overlap. */}
-                        <rect
-                          x={lx}
-                          y={ly}
-                          width={lw}
-                          height={lh}
-                          fill="none"
-                          stroke="#0ea5e9"
-                          strokeOpacity={0.5}
-                          strokeDasharray={`${4 / zoom} ${4 / zoom}`}
-                          strokeWidth={1 / zoom}
-                          pointerEvents="none"
-                        />
-                      </>
-                    )}
-                  </g>
-                );
-              })}
+              <ImageLayers
+                layers={sceneLayers}
+                isGM={isGM}
+                editing={tool === 'edit'}
+                zoom={zoom}
+                layerDragPos={layerDragPos}
+                screenToLogical={screenToLogical}
+                onLayerDragStart={(drag, pos) => { setLayerDrag(drag); setLayerDragPos(pos); }}
+              />
 
               {/* Grid overlay */}
               <GridLayer
@@ -2143,129 +2056,20 @@ export default function MapBoard() {
                 zoom={zoom}
               />
 
-              {/* Shapes */}
-              {sceneShapes.map((s) => {
-                const onDbl = isGM && currentSceneId ? () => void removeShape(currentSceneId, s.id) : undefined;
-                const draggable = isGM && tool === 'select';
-                const live = shapeDragPos && shapeDragPos.id === s.id;
-                const lx = live ? shapeDragPos.x : s.x;
-                const ly = live ? shapeDragPos.y : s.y;
-                const onMouseDown = draggable
-                  ? (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      const p = screenToLogical(e);
-                      setShapeDrag({ id: s.id, ox: p.x - s.x, oy: p.y - s.y });
-                      setShapeDragPos({ id: s.id, x: s.x, y: s.y });
-                    }
-                  : undefined;
-                const cursor = draggable ? (live ? 'grabbing' : 'grab') : 'default';
-                if (s.kind === 'circle') {
-                  return (
-                    <circle
-                      key={s.id} cx={lx} cy={ly} r={s.r}
-                      fill={s.color} stroke={s.color.slice(0, 7)} strokeWidth={2 / zoom}
-                      onDoubleClick={onDbl}
-                      onMouseDown={onMouseDown}
-                      style={{ cursor }}
-                    />
-                  );
-                }
-                if (s.kind === 'square') {
-                  return (
-                    <rect
-                      key={s.id} x={lx} y={ly} width={s.w} height={s.h}
-                      fill={s.color} stroke={s.color.slice(0, 7)} strokeWidth={2 / zoom}
-                      onDoubleClick={onDbl}
-                      onMouseDown={onMouseDown}
-                      style={{ cursor }}
-                    />
-                  );
-                }
-                if (s.kind === 'cone') {
-                  const len = Math.hypot(s.dx, s.dy);
-                  if (len === 0) return null;
-                  const ux = s.dx / len; const uy = s.dy / len;
-                  const px = -uy; const py = ux;
-                  const half = len / 2;
-                  const tipX = lx + s.dx; const tipY = ly + s.dy;
-                  return (
-                    <polygon
-                      key={s.id}
-                      points={`${lx},${ly} ${tipX + px * half},${tipY + py * half} ${tipX - px * half},${tipY - py * half}`}
-                      fill={s.color} stroke={s.color.slice(0, 7)} strokeWidth={2 / zoom}
-                      onDoubleClick={onDbl}
-                      onMouseDown={onMouseDown}
-                      style={{ cursor }}
-                    />
-                  );
-                }
-                return null;
-              })}
-
-              {/* Draft shape outline — dashed preview of the shape the GM
-                  is currently dragging out. Cleared on mouseup. */}
-              {drafting && draftEnd && (tool === 'circle' || tool === 'square' || tool === 'cone') && (() => {
-                const dx = draftEnd.x - drafting.x;
-                const dy = draftEnd.y - drafting.y;
-                const dash = `${6 / zoom} ${4 / zoom}`;
-                const sw = 2 / zoom;
-                if (tool === 'circle') {
-                  const r = Math.hypot(dx, dy);
-                  return (
-                    <g pointerEvents="none">
-                      <circle
-                        cx={drafting.x} cy={drafting.y} r={r}
-                        fill={selectedShapeColor}
-                        fillOpacity={0.25}
-                        stroke={selectedShapeColor}
-                        strokeWidth={sw}
-                        strokeDasharray={dash}
-                      />
-                    </g>
-                  );
-                }
-                if (tool === 'square') {
-                  return (
-                    <g pointerEvents="none">
-                      <rect
-                        x={Math.min(drafting.x, draftEnd.x)}
-                        y={Math.min(drafting.y, draftEnd.y)}
-                        width={Math.abs(dx)}
-                        height={Math.abs(dy)}
-                        fill={selectedShapeColor}
-                        fillOpacity={0.25}
-                        stroke={selectedShapeColor}
-                        strokeWidth={sw}
-                        strokeDasharray={dash}
-                      />
-                    </g>
-                  );
-                }
-                // Cone: draw a triangle from origin to the cursor with a
-                // 60° spread (~D&D SRD cone).
-                const len = Math.hypot(dx, dy) || 1;
-                const ux = dx / len;
-                const uy = dy / len;
-                const half = len * Math.tan((Math.PI / 180) * 30);
-                const px = -uy * half;
-                const py = ux * half;
-                const ax = drafting.x + dx + px;
-                const ay = drafting.y + dy + py;
-                const bx = drafting.x + dx - px;
-                const by = drafting.y + dy - py;
-                return (
-                  <g pointerEvents="none">
-                    <polygon
-                      points={`${drafting.x},${drafting.y} ${ax},${ay} ${bx},${by}`}
-                      fill={selectedShapeColor}
-                      fillOpacity={0.25}
-                      stroke={selectedShapeColor}
-                      strokeWidth={sw}
-                      strokeDasharray={dash}
-                    />
-                  </g>
-                );
-              })()}
+              {/* Shapes + in-progress draft preview */}
+              <ShapesLayer
+                shapes={sceneShapes}
+                draggable={isGM && tool === 'select'}
+                zoom={zoom}
+                shapeDragPos={shapeDragPos}
+                screenToLogical={screenToLogical}
+                onShapeDragStart={(drag, pos) => { setShapeDrag(drag); setShapeDragPos(pos); }}
+                onRemoveShape={isGM && currentSceneId ? (id) => void removeShape(currentSceneId, id) : undefined}
+                drawTool={tool === 'circle' || tool === 'square' || tool === 'cone' ? tool : null}
+                drafting={drafting}
+                draftEnd={draftEnd}
+                draftColor={selectedShapeColor}
+              />
 
               {/* Ruler — uses the viewer's dashboard accent so each player
                   sees their own colour for measurements. */}
