@@ -110,3 +110,22 @@ export function pointInPolygon(p: Vec, poly: Vec[]): boolean {
 export function polygonToPoints(poly: Vec[]): string {
   return poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
 }
+
+/**
+ * "col,row" keys of every fog cell whose centre falls inside any of the given
+ * visibility polygons. Drives the explored-memory accumulation — a cell is
+ * counted as seen once its centre enters the party's line of sight.
+ */
+export function cellsInVision(polys: Vec[][], cell: number, w: number, h: number): string[] {
+  if (polys.length === 0 || cell <= 0) return [];
+  const cols = Math.ceil(w / cell);
+  const rows = Math.ceil(h / cell);
+  const out: string[] = [];
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      const center = { x: (c + 0.5) * cell, y: (r + 0.5) * cell };
+      if (polys.some((poly) => pointInPolygon(center, poly))) out.push(`${c},${r}`);
+    }
+  }
+  return out;
+}

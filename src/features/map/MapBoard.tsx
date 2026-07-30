@@ -8,7 +8,7 @@ import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
 import FogLayer from './canvas/layers/FogLayer';
 import WallsLayer from './canvas/layers/WallsLayer';
-import { computeVisibility, type Vec } from './vision/visibility';
+import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
@@ -1480,15 +1480,35 @@ export default function MapBoard() {
   // PC), unioned at render time into the fog mask. Computed from committed
   // token positions (not localDrag) so it recomputes on drag-end rather than
   // every mousemove — the O(endpoints×walls) cost isn't worth per-frame.
+  // Deps are the specific fog fields (not the whole scene) so accumulating
+  // explored cells below doesn't retrigger the LoS computation in a loop.
+  const fogEnabled = currentScene?.fog.enabled ?? false;
+  const sceneFogMode = currentScene?.fog.mode ?? 'manual';
+  const walls = currentScene?.walls;
   const visionPolys = useMemo<Vec[][]>(() => {
-    if (!currentScene || !currentScene.fog.enabled || currentScene.fog.mode !== 'dynamic') return [];
-    const walls = currentScene.walls;
+    if (!fogEnabled || sceneFogMode !== 'dynamic' || !walls) return [];
     const origins = tokens.filter((t) => {
       const onScene = t.scene_id ? t.scene_id === currentSceneId : currentSceneId === state.active_scene_id;
       return onScene && !!t.owner_user_id;
     });
     return origins.map((t) => computeVisibility({ x: t.x, y: t.y }, walls, canvasW, canvasH));
-  }, [currentScene, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
+  }, [fogEnabled, sceneFogMode, walls, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
+
+  // Explored memory: mark every fog cell whose centre falls inside the current
+  // sight as "seen" so it stays dimly lit after the party moves on. Runs when
+  // vision changes (token move / wall edit), reading the freshest explored set
+  // from the store to avoid a stale closure; the store no-ops if nothing's new.
+  const addExplored = useMap((s) => s.addExplored);
+  useEffect(() => {
+    if (!currentSceneId || !fogEnabled || sceneFogMode !== 'dynamic' || visionPolys.length === 0) return;
+    const scene = useMap.getState().scenes.find((s) => s.id === currentSceneId);
+    if (!scene) return;
+    const seen = new Set(scene.fog.explored);
+    const added = cellsInVision(visionPolys, scene.fog.cell || 50, canvasW, canvasH).filter(
+      (k) => !seen.has(k),
+    );
+    if (added.length) void addExplored(currentSceneId, added);
+  }, [visionPolys, fogEnabled, sceneFogMode, currentSceneId, canvasW, canvasH, addExplored]);
 
   // Sidebar order: match each token to an initiative combatant by name
   // (case-insensitive) and use that initiative as the sort key — highest
@@ -2018,9 +2038,19 @@ export default function MapBoard() {
                       </div>
                     </>
                   ) : (
-                    <div className="text-[10px] text-slate-600 leading-relaxed">
-                      Sight is cast from each party token against your walls ({currentScene.walls.length}). Draw walls with the Walls tool. Move a token to update what the party sees.
-                    </div>
+                    <>
+                      <div className="text-[10px] text-slate-600 leading-relaxed">
+                        Sight is cast from each party token against your walls ({currentScene.walls.length}). Draw walls with the Walls tool. Move a token to update what the party sees; seen areas stay dimly lit.
+                      </div>
+                      {currentScene.fog.explored.length > 0 && (
+                        <button
+                          onClick={() => currentSceneId && void clearFog(currentSceneId)}
+                          className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                        >
+                          Reset exploration
+                        </button>
+                      )}
+                    </>
                   )}
                 </>
               )}

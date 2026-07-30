@@ -278,8 +278,11 @@ type MapStore = {
   paintFogLocal: (sceneId: string, cells: string[], reveal: boolean) => void;
   /** Persist the scene's current fog to the DB (fans out via realtime). */
   commitFog: (sceneId: string) => Promise<void>;
-  /** Fog everything again (clear all revealed cells). */
+  /** Fog everything again — clears both revealed (manual) and explored (dynamic). */
   clearFog: (sceneId: string) => Promise<void>;
+  /** Mark cells the party has now seen (dynamic mode). Merges + persists only
+   *  if something's actually new, so repeated token moves don't spam writes. */
+  addExplored: (sceneId: string, cells: string[]) => Promise<void>;
 
   // ── Tokens ──────────────────────────────────────────────────────────────
   addToken: (campaignId: string, t: Omit<MapToken, 'id'>) => Promise<string | null>;
@@ -763,11 +766,27 @@ export const useMap = create<MapStore>((set, get) => ({
 
   clearFog: async (sceneId) => {
     const prev = get().scenes;
-    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, revealed: [] } } : s)) });
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, revealed: [], explored: [] } } : s)) });
     try {
-      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, revealed: [] } }));
+      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, revealed: [], explored: [] } }));
     } catch (e) {
       set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  addExplored: async (sceneId, cells) => {
+    const scene = get().scenes.find((s) => s.id === sceneId);
+    if (!scene) return;
+    const ex = new Set(scene.fog.explored);
+    let changed = false;
+    for (const c of cells) if (!ex.has(c)) { ex.add(c); changed = true; }
+    if (!changed) return; // nothing new — skip the write
+    const explored = [...ex];
+    set({ scenes: get().scenes.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, explored } } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, explored } }));
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 

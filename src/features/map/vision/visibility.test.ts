@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeVisibility, pointInPolygon, borderWalls, type Vec } from './visibility';
+import { computeVisibility, pointInPolygon, borderWalls, cellsInVision, type Vec } from './visibility';
 
 const W = 100;
 const H = 100;
@@ -95,6 +95,35 @@ describe('computeVisibility — radius clamp', () => {
     expect(pointInPolygon({ x: 50, y: 60 }, poly)).toBe(true);
     // Area is roughly a disc of r=20, not the full canvas.
     expect(area(poly)).toBeLessThan(W * H * 0.6);
+  });
+});
+
+describe('cellsInVision', () => {
+  // One polygon covering roughly the cells (1,1)..(2,2) on a 10px grid.
+  const poly = [
+    { x: 50, y: 50 }, { x: 149, y: 50 }, { x: 149, y: 149 }, { x: 50, y: 149 },
+  ];
+
+  it('returns the cells whose centres fall inside the polygon', () => {
+    // 10px cells: centres at 55,65,... A poly from 50..149 covers cells whose
+    // centre is in (50,149): cols/rows 5..14.
+    const cells = cellsInVision([poly], 10, 200, 200);
+    expect(cells).toContain('5,5');
+    expect(cells).toContain('14,14');
+    expect(cells).not.toContain('4,4'); // centre 45 < 50
+    expect(cells).not.toContain('15,15'); // centre 155 > 149
+  });
+
+  it('is empty with no polygons or a non-positive cell', () => {
+    expect(cellsInVision([], 10, 200, 200)).toEqual([]);
+    expect(cellsInVision([poly], 0, 200, 200)).toEqual([]);
+  });
+
+  it('unions across multiple polygons', () => {
+    const far = [{ x: 300, y: 300 }, { x: 340, y: 300 }, { x: 340, y: 340 }, { x: 300, y: 340 }];
+    const cells = cellsInVision([poly, far], 10, 400, 400);
+    expect(cells).toContain('5,5');   // from first poly
+    expect(cells).toContain('31,31'); // from second poly (centre 315)
   });
 });
 
