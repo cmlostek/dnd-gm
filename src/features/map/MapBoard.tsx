@@ -1,6 +1,8 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMap, MAX_DAMAGE_LOG, type DamageLogEntry, type MapShape, type MapToken, type MapScene } from './mapStore';
+import GridLayer from './canvas/layers/GridLayer';
+import PingsLayer from './canvas/layers/PingsLayer';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
 
@@ -2133,31 +2135,13 @@ export default function MapBoard() {
               })}
 
               {/* Grid overlay */}
-              {mapShowGrid && mapGridSize >= 4 && (
-                <g>
-                  <defs>
-                    <pattern
-                      id="map-grid"
-                      width={mapGridSize}
-                      height={mapGridSize}
-                      patternUnits="userSpaceOnUse"
-                    >
-                      <path
-                        d={`M ${mapGridSize} 0 L 0 0 0 ${mapGridSize}`}
-                        fill="none"
-                        stroke="#ffffff18"
-                        strokeWidth={1 / zoom}
-                      />
-                    </pattern>
-                  </defs>
-                  <rect
-                    x={0} y={0}
-                    width={canvasW} height={canvasH}
-                    fill="url(#map-grid)"
-                    pointerEvents="none"
-                  />
-                </g>
-              )}
+              <GridLayer
+                showGrid={mapShowGrid}
+                gridSize={mapGridSize}
+                canvasW={canvasW}
+                canvasH={canvasH}
+                zoom={zoom}
+              />
 
               {/* Shapes */}
               {sceneShapes.map((s) => {
@@ -2481,12 +2465,7 @@ export default function MapBoard() {
               })}
 
               {/* Ping pulses */}
-              {pings.map((p) => (
-                <g key={p.id} pointerEvents="none">
-                  <circle cx={p.x} cy={p.y} r={6 / zoom} fill={p.color} className="map-ping-dot" />
-                  <circle cx={p.x} cy={p.y} r={6 / zoom} fill="none" stroke={p.color} strokeWidth={3 / zoom} className="map-ping-ring" />
-                </g>
-              ))}
+              <PingsLayer pings={pings} zoom={zoom} />
             </g>
           </svg>
         </div>
