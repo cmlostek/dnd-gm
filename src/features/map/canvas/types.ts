@@ -28,3 +28,9 @@ export type ShapeDrag = { id: string; ox: number; oy: number };
 
 /** Live position of the shape currently being dragged. */
 export type ShapeDragPos = { id: string; x: number; y: number };
+
+/** A token being resized by its corner handle (GM Edit tool). */
+export type TokenResize = { id: string; ox: number; oy: number };
+
+/** Live diameter of the token currently being resized (preview before commit). */
+export type TokenResizePos = { id: string; size: number };

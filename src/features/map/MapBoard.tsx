@@ -5,7 +5,8 @@ import GridLayer from './canvas/layers/GridLayer';
 import PingsLayer from './canvas/layers/PingsLayer';
 import ImageLayers from './canvas/layers/ImageLayers';
 import ShapesLayer from './canvas/layers/ShapesLayer';
-import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos } from './canvas/types';
+import TokensLayer from './canvas/layers/TokensLayer';
+import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
 
@@ -483,12 +484,8 @@ export default function MapBoard() {
   // mode to scale its diameter. We use the dominant axis (max of dx/dy) so
   // square-ish drags feel predictable; the token is a circle so width and
   // height are always equal.
-  const [tokenResize, setTokenResize] = useState<
-    { id: string; ox: number; oy: number } | null
-  >(null);
-  const [tokenResizePos, setTokenResizePos] = useState<
-    { id: string; size: number } | null
-  >(null);
+  const [tokenResize, setTokenResize] = useState<TokenResize | null>(null);
+  const [tokenResizePos, setTokenResizePos] = useState<TokenResizePos | null>(null);
   const [selectedShapeColor, setSelectedShapeColor] = useState(SHAPE_COLORS[0]);
   const [tokenName, setTokenName] = useState('');
   const [tokenEmoji, setTokenEmoji] = useState('');
@@ -2085,188 +2082,25 @@ export default function MapBoard() {
               )}
 
               {/* Tokens */}
-              {visibleTokens.map((t) => {
-                const draggable = canDragToken(t) && tool === 'select';
-                const resizable = isGM && tool === 'edit';
-                const dispColor = tokenDisplayColor(t);
-                // Live-resize preview: if this token is currently being
-                // resized, render at the in-flight size so the GM sees the
-                // change as they drag.
-                const liveSize = tokenResizePos && tokenResizePos.id === t.id ? tokenResizePos.size : t.size;
-                const r = liveSize / 2;
-                const labelY = t.y + r + Math.max(10, 14 / zoom);
-                const fontSize = Math.max(8, 11 / zoom);
-                const handleR = Math.max(5, 8 / zoom);
-
-                return (
-                  <g
-                    key={t.id}
-                    style={{ cursor: draggable ? 'grab' : 'default' }}
-                    onMouseDown={(e) => {
-                      if (!draggable) return;
-                      e.stopPropagation();
-                      const p = screenToLogical(e);
-                      setDraggingTokenId(t.id);
-                      setLocalDrag({ id: t.id, x: t.x, y: t.y });
-                      setDragOffset({ x: p.x - t.x, y: p.y - t.y });
-                    }}
-                    onDoubleClick={isGM ? () => void removeToken(t.id) : undefined}
-                  >
-                    {/* Deep-link focus pulse — a ritual's "Map" button centres
-                        here and flags this token; the ring pulses for a few
-                        seconds so players spot the caster. */}
-                    {focusTokenId === t.id && (
-                      <circle cx={t.x} cy={t.y} r={r + 6 / zoom} fill="none" stroke="#fbbf24" strokeWidth={4 / zoom}>
-                        <animate attributeName="r" values={`${r + 4 / zoom};${r + 16 / zoom};${r + 4 / zoom}`} dur="1.1s" repeatCount="indefinite" />
-                        <animate attributeName="opacity" values="1;0.2;1" dur="1.1s" repeatCount="indefinite" />
-                      </circle>
-                    )}
-                    {/* Outer ring in owner's color */}
-                    <circle
-                      cx={t.x} cy={t.y} r={r + 2 / zoom}
-                      fill="none"
-                      stroke={dispColor}
-                      strokeWidth={3 / zoom}
-                      strokeDasharray={t.hidden_from_players ? `${6 / zoom} ${3 / zoom}` : undefined}
-                    />
-                    {/* Token body */}
-                    <circle
-                      cx={t.x} cy={t.y} r={r}
-                      fill={dispColor + '55'}
-                      stroke={dispColor}
-                      strokeWidth={1.5 / zoom}
-                    />
-                    {/* Emoji icon — dominantBaseline="central" + dy offset centres
-                        the glyph both horizontally and vertically inside the circle */}
-                    {t.emoji && (
-                      <text
-                        x={t.x} y={t.y}
-                        textAnchor="middle"
-                        dominantBaseline="central"
-                        fontSize={r * 1.1}
-                        pointerEvents="none"
-                      >
-                        {t.emoji}
-                      </text>
-                    )}
-                    {/* Name label */}
-                    <text
-                      x={t.x} y={labelY}
-                      textAnchor="middle"
-                      fontSize={fontSize}
-                      fill="#fafaf9"
-                      stroke="#0f172a"
-                      strokeWidth={3 / zoom}
-                      paintOrder="stroke"
-                      pointerEvents="none"
-                    >
-                      {t.name}
-                    </text>
-                    {/* HP bar — sits just below the name label so the token
-                        glyph stays unobstructed and the bar reads with the
-                        identity it belongs to. */}
-                    {(t.maxHp ?? 0) > 0 && (() => {
-                      const barW = r * 1.8;
-                      const barH = Math.max(2, 4 / zoom);
-                      const barX = t.x - barW / 2;
-                      const barY = labelY + Math.max(3, 4 / zoom);
-                      const pct = Math.max(0, Math.min(1, (t.hp ?? 0) / (t.maxHp ?? 1)));
-                      const fill = pct > 0.6 ? '#10b981' : pct > 0.25 ? '#f59e0b' : '#ef4444';
-                      return (
-                        <g pointerEvents="none">
-                          <rect x={barX} y={barY} width={barW} height={barH} fill="#0f172a" opacity={0.7} rx={barH / 2} />
-                          <rect x={barX} y={barY} width={barW * pct} height={barH} fill={fill} rx={barH / 2} />
-                        </g>
-                      );
-                    })()}
-                    {/* Condition icons — arranged in an arc above the token.
-                        Each chip carries the condition name as a <title> so a
-                        hover surfaces the rule. */}
-                    {(t.conditions ?? []).length > 0 && (() => {
-                      const chips = t.conditions ?? [];
-                      const chipR = Math.max(3, r * 0.18);
-                      const spacing = chipR * 2.4;
-                      const totalW = (chips.length - 1) * spacing;
-                      const startX = t.x - totalW / 2;
-                      const arcY = t.y - r - chipR * 1.4;
-                      return (
-                        <g pointerEvents="none">
-                          {chips.map((slug, i) => {
-                            const c = CONDITIONS.find((x) => x.index === slug);
-                            const cx = startX + i * spacing;
-                            const initial = (c?.name ?? slug).charAt(0).toUpperCase();
-                            return (
-                              <g key={slug}>
-                                <circle cx={cx} cy={arcY} r={chipR} fill="#7f1d1d" stroke="#fda4af" strokeWidth={Math.max(0.5, 1 / zoom)} />
-                                <text
-                                  x={cx} y={arcY}
-                                  textAnchor="middle"
-                                  dominantBaseline="central"
-                                  fontSize={chipR * 1.2}
-                                  fill="#fef2f2"
-                                  fontWeight="600"
-                                >
-                                  {initial}
-                                </text>
-                                <title>{c?.name ?? slug}</title>
-                              </g>
-                            );
-                          })}
-                        </g>
-                      );
-                    })()}
-                    {/* Tooltip exposing current HP + conditions on hover (works even for non-editors) */}
-                    {((t.maxHp ?? 0) > 0 || (t.conditions ?? []).length > 0) && (
-                      <title>
-                        {`${t.name}`}
-                        {(t.maxHp ?? 0) > 0 ? ` — HP ${t.hp ?? 0}/${t.maxHp ?? 0}` : ''}
-                        {(t.conditions ?? []).length > 0
-                          ? ` — ${(t.conditions ?? []).map((s) => CONDITIONS.find((c) => c.index === s)?.name ?? s).join(', ')}`
-                          : ''}
-                      </title>
-                    )}
-                    {/* Edit-mode selection ring + bottom-right resize handle.
-                        Sized in screen pixels so the handle stays grabbable
-                        at any zoom. Both elements only render for GMs in the
-                        Edit tool — Select keeps tokens drag-only. */}
-                    {resizable && (
-                      <>
-                        <circle
-                          cx={t.x}
-                          cy={t.y}
-                          r={r + 4 / zoom}
-                          fill="none"
-                          stroke="#0ea5e9"
-                          strokeOpacity={0.6}
-                          strokeWidth={1 / zoom}
-                          strokeDasharray={`${4 / zoom} ${4 / zoom}`}
-                          pointerEvents="none"
-                        />
-                        <rect
-                          x={t.x + r - handleR}
-                          y={t.y + r - handleR}
-                          width={handleR * 2}
-                          height={handleR * 2}
-                          fill="#0ea5e9"
-                          stroke="#fafaf9"
-                          strokeWidth={1 / zoom}
-                          style={{ cursor: 'nwse-resize' }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            const p = screenToLogical(e);
-                            setTokenResize({
-                              id: t.id,
-                              ox: p.x - t.x - r,
-                              oy: p.y - t.y - r,
-                            });
-                            setTokenResizePos({ id: t.id, size: t.size });
-                          }}
-                        />
-                      </>
-                    )}
-                  </g>
-                );
-              })}
+              <TokensLayer
+                tokens={visibleTokens}
+                isGM={isGM}
+                selectTool={tool === 'select'}
+                editTool={tool === 'edit'}
+                zoom={zoom}
+                focusTokenId={focusTokenId}
+                tokenResizePos={tokenResizePos}
+                canDragToken={canDragToken}
+                tokenColor={tokenDisplayColor}
+                screenToLogical={screenToLogical}
+                onTokenDragStart={(id, pos, offset) => {
+                  setDraggingTokenId(id);
+                  setLocalDrag({ id, x: pos.x, y: pos.y });
+                  setDragOffset(offset);
+                }}
+                onTokenResizeStart={(resize, pos) => { setTokenResize(resize); setTokenResizePos(pos); }}
+                onRemoveToken={isGM ? (id) => void removeToken(id) : undefined}
+              />
 
               {/* Ping pulses */}
               <PingsLayer pings={pings} zoom={zoom} />
