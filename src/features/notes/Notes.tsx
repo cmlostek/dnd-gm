@@ -300,6 +300,30 @@ export default function Notes() {
    *  note hasn't mounted yet at click time. */
   const pendingHeadingRef = useRef<string | null>(null);
 
+  // ── Image upload (toolbar button + editor paste) ─────────────────────────
+  // Uploads to the note-images bucket and returns a permanent public URL, so
+  // embedded images never expire (unlike pasted external/CDN links). Path is
+  // `{campaignId}/{uuid}.{ext}` — the campaign prefix is enforced by RLS.
+  const imgInputRef = useRef<HTMLInputElement>(null);
+  const [imageUploading, setImageUploading] = useState(false);
+  const uploadImageFile = useCallback(async (file: File): Promise<string | null> => {
+    if (!campaignId) return null;
+    if (!file.type.startsWith('image/')) return null;
+    if (file.size > 10 * 1024 * 1024) return null; // 10 MB cap
+    setImageUploading(true);
+    try {
+      const ext = (file.name.split('.').pop() ?? 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+      const path = `${campaignId}/${crypto.randomUUID()}.${ext}`;
+      const { error } = await supabase.storage
+        .from('note-images')
+        .upload(path, file, { contentType: file.type, upsert: false });
+      if (error) { console.error('[notes] image upload failed', error); return null; }
+      return supabase.storage.from('note-images').getPublicUrl(path).data.publicUrl;
+    } finally {
+      setImageUploading(false);
+    }
+  }, [campaignId]);
+
   // ── Sidebar collapse / resize (persisted) ────────────────────────────────
   const SIDEBAR_W_KEY = 'dnd-gm:notesSidebarWidth';
   const SIDEBAR_COLLAPSED_KEY = 'dnd-gm:notesSidebarCollapsed';
@@ -596,6 +620,10 @@ export default function Notes() {
   // who can see a note can reorder it within its current folder/root group.
   const [reorderDragId, setReorderDragId] = useState<string | null>(null);
   const [reorderOverId, setReorderOverId] = useState<string | null>(null);
+  const clearReorderDrag = () => {
+    setReorderDragId(null);
+    setReorderOverId(null);
+  };
   const handleReorderDrop = (folderKey: string, groupNotes: Note[], targetId: string) => {
     const fromId = reorderDragId;
     setReorderDragId(null);
@@ -881,7 +909,10 @@ export default function Notes() {
               e.preventDefault();
               setDragOverId('root');
             }}
-            onDragLeave={() => setDragOverId(null)}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+              setDragOverId(null);
+            }}
             onDrop={(e) => {
               if (!isGM) return;
               e.preventDefault();
@@ -947,6 +978,7 @@ export default function Notes() {
                   setConfirmingId(null);
                 }}
                 onDragStart={setDragData}
+                onDragEnd={() => setDragData(null)}
                 onDragOverItem={setDragOverId}
                 onDrop={onDrop}
                 noteOrder={noteOrder}
@@ -954,6 +986,7 @@ export default function Notes() {
                 reorderDragId={reorderDragId}
                 reorderOverId={reorderOverId}
                 onReorderDragStart={setReorderDragId}
+                onReorderDragEnd={clearReorderDrag}
                 onReorderOver={setReorderOverId}
                 onReorderDrop={handleReorderDrop}
               />
@@ -978,9 +1011,12 @@ export default function Notes() {
                 }}
                 onCancelDelete={() => setConfirmingId(null)}
                 onDragStart={() => setDragData({ kind: 'note', id: n.id })}
+                onDragEnd={() => setDragData(null)}
                 reorderDragging={reorderDragId === n.id}
+                reorderActive={reorderDragId !== null}
                 reorderOver={reorderOverId === n.id}
                 onReorderDragStart={() => setReorderDragId(n.id)}
+                onReorderDragEnd={clearReorderDrag}
                 onReorderOver={setReorderOverId}
                 onReorderDrop={() => handleReorderDrop('root', rootNotes, n.id)}
               />
@@ -1235,9 +1271,25 @@ export default function Notes() {
                     <AlignRight size={13} />
                   </ToolbarBtn>
                   <div className="w-px h-4 bg-slate-700 mx-0.5" />
-                  <ToolbarBtn title="Insert image" onClick={() => editorRef.current?.format({ kind: 'wrap', before: '[](', after: ')' })}>
-                    <ImagePlus size={13} />
+                  <ToolbarBtn
+                    title={imageUploading ? 'Uploading image…' : 'Upload image'}
+                    onClick={() => { if (!imageUploading) imgInputRef.current?.click(); }}
+                  >
+                    {imageUploading ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />}
                   </ToolbarBtn>
+                  <input
+                    ref={imgInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (!file) return;
+                      const url = await uploadImageFile(file);
+                      if (url) editorRef.current?.format({ kind: 'insert', text: `![](${url})` });
+                    }}
+                  />
                 </div>
               )}
 
@@ -1262,6 +1314,7 @@ export default function Notes() {
                     ydocState={active.ydoc_state ?? null}
                     userId={userId ?? ''}
                     userName={displayName ?? userId ?? 'Traveller'}
+                    uploadImage={uploadImageFile}
                     onCollaboratorsChange={setActiveCollaborators}
                   />
                 ) : (
@@ -1573,6 +1626,7 @@ type FolderNodeProps = {
   onStartDeleteFolder: (id: string) => void;
   onDeleteFolder: (id: string) => void;
   onDragStart: (d: DragItem) => void;
+  onDragEnd: () => void;
   onDragOverItem: (id: string | null) => void;
   onDrop: (target: string | null) => void;
   /** Custom sort order (Part C) — separate from the folder-move drag above. */
@@ -1581,6 +1635,7 @@ type FolderNodeProps = {
   reorderDragId: string | null;
   reorderOverId: string | null;
   onReorderDragStart: (id: string) => void;
+  onReorderDragEnd: () => void;
   onReorderOver: (id: string | null) => void;
   onReorderDrop: (folderKey: string, groupNotes: Note[], targetId: string) => void;
 };
@@ -1614,13 +1669,19 @@ function FolderNode(props: FolderNodeProps) {
           e.stopPropagation();
           props.onDragStart({ kind: 'folder', id: folder.id });
         }}
+        onDragEnd={props.onDragEnd}
         onDragOver={(e) => {
           if (!isGM) return;
           e.preventDefault();
           e.stopPropagation();
           props.onDragOverItem(folder.id);
         }}
-        onDragLeave={() => props.onDragOverItem(null)}
+        onDragLeave={(e) => {
+          // Same child-crossing guard as NoteRow — the folder row has a chevron,
+          // icon, label, and action buttons inside it.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          props.onDragOverItem(null);
+        }}
         onDrop={(e) => {
           if (!isGM) return;
           e.preventDefault();
@@ -1774,9 +1835,12 @@ function FolderNode(props: FolderNodeProps) {
               onDelete={() => props.onDeleteNote(n.id)}
               onCancelDelete={() => props.onCancelDelete()}
               onDragStart={() => props.onDragStart({ kind: 'note', id: n.id })}
+              onDragEnd={props.onDragEnd}
               reorderDragging={props.reorderDragId === n.id}
+              reorderActive={props.reorderDragId !== null}
               reorderOver={props.reorderOverId === n.id}
               onReorderDragStart={() => props.onReorderDragStart(n.id)}
+              onReorderDragEnd={props.onReorderDragEnd}
               onReorderOver={props.onReorderOver}
               onReorderDrop={() => props.onReorderDrop(folder.id, folderNotes, n.id)}
             />
@@ -1801,12 +1865,24 @@ type NoteRowProps = {
   onDelete: () => void;
   onCancelDelete: () => void;
   onDragStart: () => void;
+  /** Clears the in-flight drag payload when the gesture ends without a valid
+   *  drop (Esc, drop on dead space). Without this the stale payload gets
+   *  applied to the *next* drop, moving the wrong note. */
+  onDragEnd: () => void;
   /** Custom sort order (Part C) — separate drag gesture from onDragStart
    *  above, initiated only from the grip handle so it can't collide with
    *  the GM-only drag-into-folder gesture on the row body. */
   reorderDragging: boolean;
+  /** True while a reorder gesture is in flight anywhere in the tree. The row
+   *  only claims dragover/drop when this is set — otherwise a drag-into-folder
+   *  gesture would be swallowed by the reorder handler. */
+  reorderActive: boolean;
   reorderOver: boolean;
   onReorderDragStart: () => void;
+  /** Clears both the reorder source and hover target. Must fire on dragend or a
+   *  cancelled reorder (Esc / dead-space drop) leaves reorderActive stuck on,
+   *  which would then swallow every later drag-into-folder gesture. */
+  onReorderDragEnd: () => void;
   /** Pass the note's id to highlight this row as a drop target, or null to clear. */
   onReorderOver: (id: string | null) => void;
   onReorderDrop: () => void;
@@ -1825,9 +1901,12 @@ function NoteRow({
   onDelete,
   onCancelDelete,
   onDragStart,
+  onDragEnd,
   reorderDragging,
+  reorderActive,
   reorderOver,
   onReorderDragStart,
+  onReorderDragEnd,
   onReorderOver,
   onReorderDrop,
 }: NoteRowProps) {
@@ -1840,13 +1919,27 @@ function NoteRow({
         e.stopPropagation();
         onDragStart();
       }}
+      onDragEnd={onDragEnd}
       onDragOver={(e) => {
         e.preventDefault();
-        onReorderOver(note.id);
+        // Only light up as a reorder target when a reorder is actually in
+        // flight; during a drag-into-folder gesture the row must stay
+        // transparent so the drop can reach the folder/root zone behind it.
+        if (reorderActive) onReorderOver(note.id);
       }}
-      onDragLeave={() => onReorderOver(null)}
+      onDragLeave={(e) => {
+        // dragleave also fires when the pointer crosses into a child element
+        // (grip, icon, title, presence dots), which otherwise clears the drop
+        // target mid-drag and makes the whole interaction flicker.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        onReorderOver(null);
+      }}
       onDrop={(e) => {
         e.preventDefault();
+        // Claim the drop only for reorders. Letting a folder-move drop bubble
+        // means it reaches the enclosing folder (or the root zone) instead of
+        // being silently discarded here.
+        if (!reorderActive) return;
         e.stopPropagation();
         onReorderDrop();
       }}
@@ -1865,7 +1958,7 @@ function NoteRow({
           e.dataTransfer.effectAllowed = 'move';
           onReorderDragStart();
         }}
-        onDragEnd={() => onReorderOver(null)}
+        onDragEnd={onReorderDragEnd}
         onClick={(e) => e.stopPropagation()}
         title="Drag to reorder"
         className="cursor-grab active:cursor-grabbing text-slate-600 hover:text-slate-400 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"

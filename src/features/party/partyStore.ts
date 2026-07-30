@@ -33,6 +33,13 @@ export type InventoryItem = {
   name: string;
   qty: number;
   equipped: boolean;
+  /** Optional id of another inventory item this one requires (e.g. a bow
+   *  depends on arrows). The sheet warns when the dependency is missing or at
+   *  0 quantity. */
+  dependsOn?: string;
+  /** Optional item-icon key (see data/itemIcons). Overrides the auto-derived
+   *  kind icon and any homebrew-source icon when set. */
+  icon?: string;
 };
 
 /** Action-economy bucket. Drives the Actions tab grouping. */
@@ -143,6 +150,9 @@ export type PartyMember = {
   subclassId?: string;
   /** Free-form appearance/personality fields collected during creation. */
   details?: CharacterDetails;
+  /** Number of hands available for wielding weapons/shields. Defaults to 2;
+   *  raise it for many-armed creatures. Drives the inventory's over-equip guard. */
+  hands?: number;
 };
 
 export const DEFAULT_GOLD: Gold = { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 };
@@ -214,6 +224,7 @@ export function rowToMember(r: Row): PartyMember {
     hitDiceCurrent: d.hitDiceCurrent,
     conditions: d.conditions ?? [],
     exhaustion: d.exhaustion ?? 0,
+    hands: d.hands ?? 2,
   };
 }
 
@@ -258,7 +269,7 @@ function patchToUpdate(
     'xp', 'gold', 'deathSaves', 'skillProfs', 'saveProfs', 'inventory',
     'spellAbility', 'spellSlots', 'spells', 'customActions', 'features',
     'classId', 'subclassId', 'details', 'hitDieSize', 'hitDiceCurrent',
-    'conditions', 'exhaustion',
+    'conditions', 'exhaustion', 'hands',
   ];
   const needsDataUpdate = dataKeys.some((k) => k in patch);
   if (needsDataUpdate) {

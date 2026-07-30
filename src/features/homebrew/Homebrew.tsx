@@ -4,6 +4,8 @@ import { useStore } from '../../store';
 import type { HomebrewItem, HomebrewSpell, StatBlock } from '../../store';
 import PageHeader from '../../components/PageHeader';
 import { Plus, Trash2, Search, ExternalLink, X, Pencil, Save, Share2, Eye, EyeOff } from 'lucide-react';
+import IconPicker from '../../components/IconPicker';
+import { iconByKey, iconForCategory } from '../../data/itemIcons';
 import { useSession } from '../session/sessionStore';
 import { useSharedHomebrew } from './sharedHomebrewStore';
 import type { SharedHomebrew } from './sharedHomebrewStore';
@@ -343,7 +345,13 @@ function ItemsPane({
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="font-serif text-lg text-sky-200">{i.name || 'Unnamed'}</div>
+                    <div className="font-serif text-lg text-sky-200 flex items-center gap-2">
+                      {(() => {
+                        const Icon = iconByKey(i.icon) ?? iconForCategory(i.category);
+                        return <Icon size={16} className="shrink-0 text-slate-400" />;
+                      })()}
+                      <span className="truncate">{i.name || 'Unnamed'}</span>
+                    </div>
                     <div className="text-[11px] text-slate-500">
                       {i.category}
                       {i.rarity ? ` · ${i.rarity}` : ''}
@@ -456,11 +464,19 @@ function ItemEditor({
       </div>
       <div className="p-4 space-y-3 flex-1">
         <Field label="Name">
-          <input
-            value={form.name}
-            onChange={(e) => set('name', e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-sm"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              value={form.name}
+              onChange={(e) => set('name', e.target.value)}
+              className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-sm"
+            />
+            <IconPicker
+              value={form.icon}
+              onChange={(key) => set('icon', key)}
+              fallback={iconForCategory(form.category)}
+              title="Item icon (shown in lists & inventory)"
+            />
+          </div>
         </Field>
         <CampaignField
           value={form.campaign}

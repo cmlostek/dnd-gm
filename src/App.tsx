@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Route, Routes, Navigate, useLocation } from 'react-router-dom';
-import { Swords, NotebookPen, Map as MapIcon, BookOpen, Sparkles, Package, ScrollText, Users, FlaskConical, Dices, Copy, Mic, Eye, Settings as SettingsIcon, BookMarked, Radio, LayoutDashboard, Menu, X as XIcon } from 'lucide-react';
+import { Swords, NotebookPen, Map as MapIcon, BookOpen, Sparkles, Package, ScrollText, Users, FlaskConical, Dices, Copy, Mic, Eye, Settings as SettingsIcon, BookMarked, Radio, LayoutDashboard, Menu, X as XIcon, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { QuickDice } from './features/dice/QuickDice';
+import DiceRollOverlay from './features/dice/DiceRollOverlay';
+import CommandPalette from './features/palette/CommandPalette';
+import Scratchpad from './features/scratchpad/Scratchpad';
+import { useScratchpad } from './features/scratchpad/scratchpadStore';
 import { useQuickDice } from './features/dice/quickDiceStore';
 import ChatPanel from './features/chat/ChatPanel';
 import Initiative from './features/initiative/Initiative';
@@ -11,6 +15,7 @@ import MapBoard from './features/map/MapBoard';
 import Spells from './features/spells/Spells';
 import Items from './features/items/Items';
 import StatBlocks from './features/statblocks/StatBlocks';
+import Encounters from './features/encounters/Encounters';
 import Rules from './features/rules/Rules';
 import Party from './features/party/Party';
 import Homebrew from './features/homebrew/Homebrew';
@@ -41,6 +46,7 @@ const nav: NavItem[] = [
   { to: '/map', label: 'Map', icon: MapIcon },
   { to: '/spells', label: 'Spells', icon: Sparkles },
   { to: '/items', label: 'Items', icon: Package },
+  { to: '/encounters', label: 'Encounters', icon: Swords, gmOnly: true },
   { to: '/statblocks', label: 'Stat Blocks', icon: ScrollText, gmOnly: true },
   { to: '/homebrew', label: 'Homebrew', icon: FlaskConical, gmOnly: true },
   { to: '/record', label: 'Record', icon: Mic, gmOnly: true },
@@ -78,15 +84,22 @@ export default function App() {
 function AppShell() {
   const toggleQuickDice = useQuickDice((s) => s.toggle);
   const quickDiceOpen = useQuickDice((s) => s.open);
+  const toggleScratchpad = useScratchpad((s) => s.toggle);
+  const scratchpadOpen = useScratchpad((s) => s.open);
   const role = useSession((s) => s.role);
   const campaignId = useSession((s) => s.campaignId);
   const campaignName = useSession((s) => s.campaignName);
   const joinCode = useSession((s) => s.joinCode);
   const displayName = useSession((s) => s.displayName);
-  // Sidebar collapse is transient — start collapsed, expand on hover when the
-  // user has the auto-expand preference enabled (default on; toggle lives in
-  // /settings → Display). When disabled the sidebar stays as a narrow rail.
-  const hoverExpand = useSidebar((s) => s.hoverExpand);
+  // Sidebar behaviour has two modes (toggle in /settings → Display):
+  //   - 'manual' (default) — pinned open/closed via the header collapse button;
+  //     the pin state lives in the store's `collapsed`.
+  //   - 'auto' — a narrow rail that expands on hover; `expanded` tracks that
+  //     transient hover state.
+  const sidebarMode = useSidebar((s) => s.mode);
+  const pinnedCollapsed = useSidebar((s) => s.collapsed);
+  const toggleCollapsed = useSidebar((s) => s.toggleCollapsed);
+  const autoMode = sidebarMode === 'auto';
   const [expanded, setExpanded] = useState(false);
   // Mobile-only: hamburger-driven drawer state. Below md, the sidebar isn't
   // visible at all by default — clicking the hamburger slides it in over the
@@ -101,8 +114,9 @@ function AppShell() {
   // preview what the players see.
   const isGM = trueIsGM && !viewAsPlayer;
   // Mobile drawer always renders the expanded layout (full nav labels,
-  // campaign name in the header). Desktop honours the hover-expand state.
-  const collapsed = !expanded && !mobileOpen;
+  // campaign name in the header). On desktop, auto mode follows the hover
+  // state; manual mode follows the pinned collapse state.
+  const collapsed = mobileOpen ? false : autoMode ? !expanded : pinnedCollapsed;
 
   // ── Page title ────────────────────────────────────────────────────────────
   const location = useLocation();
@@ -186,11 +200,11 @@ function AppShell() {
         />
       )}
       <aside
-        onMouseEnter={hoverExpand ? () => setExpanded(true) : undefined}
-        onMouseLeave={hoverExpand ? () => setExpanded(false) : undefined}
-        onFocus={hoverExpand ? () => setExpanded(true) : undefined}
+        onMouseEnter={autoMode ? () => setExpanded(true) : undefined}
+        onMouseLeave={autoMode ? () => setExpanded(false) : undefined}
+        onFocus={autoMode ? () => setExpanded(true) : undefined}
         onBlur={
-          hoverExpand
+          autoMode
             ? (e) => {
                 // Collapse only when focus leaves the sidebar entirely
                 if (!e.currentTarget.contains(e.relatedTarget as Node)) setExpanded(false);
@@ -208,6 +222,17 @@ function AppShell() {
         {/* ── Header ───────────────────────────────────────────────────────── */}
         {collapsed ? (
           <div className="px-2 py-3 border-b border-slate-800 flex flex-col items-center gap-2">
+            {/* Manual mode: expand the rail. (Auto mode expands on hover, so it
+                doesn't need the button.) */}
+            {!autoMode && (
+              <button
+                onClick={toggleCollapsed}
+                title="Expand sidebar"
+                className="hidden md:flex p-1.5 rounded border bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300"
+              >
+                <ChevronsRight size={14} />
+              </button>
+            )}
             <button
               onClick={toggleQuickDice}
               title="Quick dice roller"
@@ -219,6 +244,18 @@ function AppShell() {
               style={quickDiceOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
             >
               <Dices size={14} />
+            </button>
+            <button
+              onClick={toggleScratchpad}
+              title="Scratchpad"
+              className={`p-1.5 rounded border ${
+                scratchpadOpen
+                  ? 'bg-slate-900'
+                  : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300'
+              }`}
+              style={scratchpadOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
+            >
+              <NotebookPen size={14} />
             </button>
             {isGM && recordingSupported && (
               <button
@@ -260,6 +297,16 @@ function AppShell() {
               >
                 <XIcon size={16} />
               </button>
+              {/* Manual mode: collapse the sidebar to the icon rail. */}
+              {!autoMode && (
+                <button
+                  onClick={toggleCollapsed}
+                  title="Collapse sidebar"
+                  className="hidden md:flex p-1.5 rounded text-slate-400 hover:bg-slate-800"
+                >
+                  <ChevronsLeft size={16} />
+                </button>
+              )}
               {isGM && recordingSupported && (
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
@@ -284,6 +331,18 @@ function AppShell() {
                 style={quickDiceOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
               >
                 <Dices size={14} />
+              </button>
+              <button
+                onClick={toggleScratchpad}
+                title="Scratchpad"
+                className={`p-1.5 rounded border ${
+                  scratchpadOpen
+                    ? 'bg-slate-900'
+                    : 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300'
+                }`}
+                style={scratchpadOpen ? { color: 'var(--ac-200)', borderColor: 'var(--ac-700)' } : undefined}
+              >
+                <NotebookPen size={14} />
               </button>
             </div>
           </div>
@@ -365,6 +424,7 @@ function AppShell() {
           <Route path="/items" element={<Items />} />
           {/* /shop removed — redirect any old bookmarks to Items. */}
           <Route path="/shop" element={<Navigate to="/items" replace />} />
+          {isGM && <Route path="/encounters" element={<Encounters />} />}
           {isGM && <Route path="/statblocks" element={<StatBlocks />} />}
           {isGM && <Route path="/homebrew" element={<Homebrew />} />}
           {isGM && <Route path="/record" element={<Transcription />} />}
@@ -375,6 +435,12 @@ function AppShell() {
       </main>
       </div>
       <QuickDice />
+      {/* Centre-screen roll flourish. Self-driving: it watches the roll
+          history, so it covers every roll site in the app. */}
+      <DiceRollOverlay />
+      {/* ⌘K / Ctrl-K from anywhere. Registers its own global key listener. */}
+      <CommandPalette />
+      <Scratchpad />
       {/* Dashboard embeds its own chat surface, so hide the floating one there. */}
       {location.pathname !== '/dashboard' && <ChatPanel />}
     </div>

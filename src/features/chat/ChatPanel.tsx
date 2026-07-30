@@ -3,13 +3,16 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate } from 'react-router-dom';
 import { MessageCircle, X, Send, Pencil, Trash2, Check, Palette, HelpCircle, Eye } from 'lucide-react';
-import { useChat, type ChatMember, type ChatMessage } from './chatStore';
+import { useChat, type ChatMember, type ChatMessage, type ChatRollData } from './chatStore';
+import { useQuickDice, makeRoll } from '../dice/quickDiceStore';
 import { useChatPanel } from './chatPanelStore';
 import { useSession } from '../session/sessionStore';
 import MentionTextarea from './MentionTextarea';
 import { extractMentionIds, parseSegments, filterMembers } from './mentions';
 import { useCatalog, type CatalogKind } from './catalog';
 import { useChatCatalog } from './useChatCatalog';
+import { useOpenCatalogRef } from './useOpenCatalogRef';
+import { useNotifications } from '../notifications/notificationStore';
 import { KIND_FG, KIND_PILL_BG, KIND_ICON_CHAR } from './chips';
 import ChipContextMenu from './ChipContextMenu';
 import {
@@ -103,6 +106,7 @@ export default function ChatPanel({ variant = 'floating' }: { variant?: 'floatin
   const subscribe = useChat((s) => s.subscribe);
   const clear = useChat((s) => s.clear);
   const send = useChat((s) => s.send);
+  const sendRoll = useChat((s) => s.sendRoll);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const catalog = useCatalog();
@@ -149,6 +153,44 @@ export default function ChatPanel({ variant = 'floating' }: { variant?: 'floatin
     }
     prevPingCountRef.current = pingCount;
   }, [pingCount]);
+
+  // Browser notification for the same events, gated on the tab being in the
+  // background (the store checks visibility). Tracked by message id rather
+  // than by count so re-renders and deletions can't re-fire an old ping.
+  const notify = useNotifications((s) => s.notify);
+  const notifiedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!userId) return;
+    const pings = messages.filter(
+      (m) =>
+        m.senderId !== userId &&
+        !m.deletedAt &&
+        new Date(m.createdAt).getTime() > lastSeenAt &&
+        (m.mentions.includes(userId) || (m.whisperTo?.includes(userId) ?? false)),
+    );
+    const latest = pings[pings.length - 1];
+    if (!latest) return;
+    // First pass after load just records where we are — otherwise opening the
+    // app with unread mentions fires a popup for a message from hours ago.
+    if (notifiedIdRef.current === null) {
+      notifiedIdRef.current = latest.id;
+      return;
+    }
+    if (notifiedIdRef.current === latest.id) return;
+    notifiedIdRef.current = latest.id;
+
+    const whisper = latest.whisperTo?.includes(userId) ?? false;
+    const from = members[latest.senderId]?.displayName ?? 'Someone';
+    const preview =
+      latest.data?.kind === 'roll'
+        ? `rolled ${latest.data.total} — ${latest.data.label}`
+        : latest.body.slice(0, 120);
+    notify(
+      whisper ? 'whisper' : 'mention',
+      whisper ? `${from} whispered you` : `${from} mentioned you`,
+      preview,
+    );
+  }, [messages, lastSeenAt, userId, members, notify]);
 
   // Mark messages as read whenever chat is visible (embedded view, or
   // floating panel open). Re-fires on new message arrivals so the count
@@ -387,13 +429,90 @@ export default function ChatPanel({ variant = 'floating' }: { variant?: 'floatin
         members={Object.values(members)}
         selfId={userId}
         catalog={catalog}
-        onSend={(body, opts) =>
-          send(campaignId, body, {
+        onSend={(body, opts) => {
+          // `/roll 1d20+5` posts a result card instead of the literal text, and
+          // also drops it into the local dice history so the on-screen flourish
+          // fires for the person who rolled.
+          const cmd = parseRollCommand(body);
+          if (cmd) {
+            const roll = makeRoll(cmd.formula, cmd.label);
+            if (roll) {
+              useQuickDice.getState().pushRoll(roll);
+              return sendRoll(
+                campaignId,
+                {
+                  kind: 'roll',
+                  label: roll.label,
+                  detail: roll.detail,
+                  total: roll.total,
+                  die: roll.die,
+                  crit: roll.crit,
+                },
+                { whisperTo: opts?.whisperTo },
+              );
+            }
+            // Unparseable formula falls through and posts as plain text, so the
+            // typo is visible rather than silently swallowed.
+          }
+          return send(campaignId, body, {
             mentions: extractMentionIds(body),
             whisperTo: opts?.whisperTo,
-          })
-        }
+          });
+        }}
       />
+    </div>
+  );
+}
+
+/**
+ * Parse a `/roll` (or `/r`) command into a formula and optional label.
+ *
+ *   /roll 1d20+5              → { formula: '1d20+5' }
+ *   /r 2d6 + 3 sneak attack   → { formula: '2d6 + 3', label: 'sneak attack' }
+ *
+ * The formula is matched greedily as leading dice/modifier terms; whatever
+ * follows is treated as a label, so players can annotate a roll naturally
+ * without learning a separator.
+ */
+export function parseRollCommand(input: string): { formula: string; label?: string } | null {
+  const m = input.trim().match(/^\/(?:roll|r)\s+(.+)$/i);
+  if (!m) return null;
+  const rest = m[1].trim();
+  const split = rest.match(/^((?:\s*[+-]?\s*(?:\d*d\d+|\d+))+)\s*(.*)$/i);
+  if (!split) return null;
+  const formula = split[1].trim();
+  const label = split[2].trim();
+  if (!formula) return null;
+  return { formula, label: label || undefined };
+}
+
+/** A dice result rendered inside the chat log. */
+function RollCard({ roll }: { roll: ChatRollData }) {
+  const accent =
+    roll.crit === 'hit' ? '#fbbf24' : roll.crit === 'miss' ? '#f43f5e' : 'var(--ac-400)';
+  return (
+    <div
+      className="mt-0.5 inline-flex items-center gap-2.5 rounded border px-2.5 py-1.5"
+      style={{ borderColor: `${'var(--ac-700)'}`, background: 'rgb(2 6 23 / 0.5)' }}
+    >
+      <span
+        className="font-mono text-lg leading-none tabular-nums"
+        style={{ color: accent }}
+      >
+        {roll.total}
+      </span>
+      <span className="flex flex-col leading-tight min-w-0">
+        <span className="text-[11px] text-slate-300 truncate">{roll.label}</span>
+        <span className="text-[10px] font-mono text-slate-500 truncate">{roll.detail}</span>
+      </span>
+      {roll.crit && (
+        <span
+          className="text-[9px] uppercase tracking-[0.15em] shrink-0"
+          style={{ color: accent }}
+        >
+          {roll.crit === 'hit' ? 'Crit' : 'Fumble'}
+        </span>
+      )}
     </div>
   );
 }
@@ -519,6 +638,8 @@ function MessageRow({
           onSave={saveEdit}
           onCancel={cancelEdit}
         />
+      ) : msg.data?.kind === 'roll' && !isDeleted ? (
+        <RollCard roll={msg.data} />
       ) : (
         <MessageBody body={msg.body} members={members} whisper={isWhisper} selfId={selfId} />
       )}
@@ -646,37 +767,7 @@ function MessageBody({
   selfId: string;
 }) {
   const segs = useMemo(() => parseSegments(body), [body]);
-  const navigate = useNavigate();
-  const setActiveNote = useNotes((s) => s.setActiveNote);
-  const setActiveNpc = useNpcStore((s) => s.setActive);
-
-  const onOpenRef = (refKind: CatalogKind, identifier: string) => {
-    switch (refKind) {
-      case 'note':
-        setActiveNote(identifier);
-        navigate('/notes');
-        break;
-      case 'npc':
-        setActiveNpc(identifier);
-        navigate('/npcs');
-        break;
-      case 'item':
-        navigate(`/items#custom-${identifier}`);
-        break;
-      case 'srd-item':
-        navigate(`/items#${identifier}`);
-        break;
-      case 'spell':
-        navigate(`/spells#custom-${identifier}`);
-        break;
-      case 'srd-spell':
-        navigate(`/spells#${identifier}`);
-        break;
-      case 'rule':
-        navigate(`/rules#${identifier}`);
-        break;
-    }
-  };
+  const onOpenRef = useOpenCatalogRef();
 
   return (
     <div
@@ -1008,6 +1099,21 @@ function SyntaxHelp() {
             <li>
               <span className="font-mono text-slate-100">/w</span>
               <span className="text-slate-500"> alone — repeat last whisper</span>
+            </li>
+            <li>
+              <span className="font-mono text-slate-100">/roll 1d20+5</span>
+              <span className="text-slate-500"> — roll dice (or </span>
+              <span className="font-mono text-slate-100">/r</span>
+              <span className="text-slate-500">)</span>
+            </li>
+            <li className="pl-3 border-l border-slate-800">
+              <span className="text-slate-500">Add a label: </span>
+              <span className="font-mono text-slate-100">/r 2d6+3 sneak attack</span>
+            </li>
+            <li className="pl-3 border-l border-slate-800">
+              <span className="text-slate-500">While whispering, </span>
+              <span className="font-mono text-slate-100">/roll</span>
+              <span className="text-slate-500"> sends the result privately</span>
             </li>
             <li>
               <span className="font-mono text-slate-100">Right-click</span>

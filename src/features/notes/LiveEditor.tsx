@@ -255,7 +255,10 @@ const highlightPlugin = ViewPlugin.fromClass(
 
 // ─── Inline image preview ────────────────────────────────────────────────────
 // Replaces ![alt](url) with a thumbnail widget when the cursor is outside it.
-const IMAGE_RE = /\[([^\]\n]*)\]\(([^)\n]+)\)/g;
+// Leading `!` optional: uploads insert proper `![](url)` markdown (renders in
+// both the editor and the read-only view), while older link-style `[](url)`
+// images still match and render in the editor.
+const IMAGE_RE = /!?\[([^\]\n]*)\]\(([^)\n]+)\)/g;
 
 class ImageWidget extends WidgetType {
   constructor(readonly src: string, readonly alt: string) { super(); }
@@ -888,6 +891,8 @@ type Props = {
   rollFormula: (formula: string) => void;
   party: PartyMember[];
   npcs?: NPC[];
+  /** Uploads a pasted image and returns its permanent public URL (or null). */
+  uploadImage?: (file: File) => Promise<string | null>;
   /** Full note list — used for [[Title#Heading]] heading autocomplete. */
   notes?: Note[];
   // Collab
@@ -926,7 +931,7 @@ export type { Collaborator };
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export const LiveEditor = forwardRef<LiveEditorHandle, Props>(function LiveEditor(
-  { body, onChange, wikiIndex, onNavigate, rollFormula, party, npcs, notes, noteId, ydocState, userId, userName, onCollaboratorsChange },
+  { body, onChange, wikiIndex, onNavigate, rollFormula, party, npcs, notes, uploadImage, noteId, ydocState, userId, userName, onCollaboratorsChange },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -937,6 +942,7 @@ export const LiveEditor = forwardRef<LiveEditorHandle, Props>(function LiveEdito
   const wikiRef                 = useRef(wikiIndex);          wikiRef.current                 = wikiIndex;
   const navRef                  = useRef(onNavigate);         navRef.current                  = onNavigate;
   const rollRef                 = useRef(rollFormula);        rollRef.current                 = rollFormula;
+  const uploadImageRef          = useRef(uploadImage);        uploadImageRef.current          = uploadImage;
   const partyRef                = useRef(party);              partyRef.current                = party;
   const npcsRef                 = useRef(npcs ?? []);          npcsRef.current                 = npcs ?? [];
   const notesRef                = useRef(notes ?? []);         notesRef.current                = notes ?? [];
@@ -1179,6 +1185,33 @@ export const LiveEditor = forwardRef<LiveEditorHandle, Props>(function LiveEdito
     },
   });
 
+  // Paste handler: upload an image from the clipboard and insert it inline.
+  // Falls through to the default paste for non-image content.
+  const pasteExt = EditorView.domEventHandlers({
+    paste(event, view) {
+      const items = event.clipboardData?.items;
+      const upload = uploadImageRef.current;
+      if (!items || !upload) return false;
+      for (const item of Array.from(items)) {
+        if (!item.type.startsWith('image/')) continue;
+        const file = item.getAsFile();
+        if (!file) continue;
+        event.preventDefault();
+        void upload(file).then((url) => {
+          if (!url) return;
+          const { from } = view.state.selection.main;
+          const text = `![](${url})`;
+          view.dispatch({
+            changes: { from, insert: text },
+            selection: { anchor: from + text.length },
+          });
+        });
+        return true;
+      }
+      return false;
+    },
+  });
+
   const [collabReady, setCollabReady] = useState(!!ydocState);
 
   // Mount once per note (key={note.id} ensures remount on note switch).
@@ -1310,6 +1343,7 @@ export const LiveEditor = forwardRef<LiveEditorHandle, Props>(function LiveEdito
           autocorrectExtension(),
           markPlugin,
           clickExt,
+          pasteExt,
           noteTheme,
           EditorView.lineWrapping,
           EditorView.updateListener.of((update) => {

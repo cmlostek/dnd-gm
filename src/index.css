@@ -224,9 +224,76 @@ html.theme-red    .bg-slate-800, html.theme-green  .bg-slate-800,
 html.theme-purple .bg-slate-800, html.theme-teal   .bg-slate-800 {
   background-color: color-mix(in srgb, #1e293b 87%, var(--theme-hue)) !important;
 }
+/* PageHeader (and other panels) ride on the bg-slate-900/50 and /40 opacity
+   variants, which Tailwind compiles as their own classes — the tint rules
+   above (keyed on plain .bg-slate-900) don't catch them, so the heading strip
+   stayed neutral slate in a themed palette. Tint them like the panel bg. */
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .bg-slate-900\/50,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .bg-slate-900\/40 {
+  background-color: color-mix(in srgb, #0f172a 89%, var(--theme-hue)) !important;
+}
+/* Header/accent text is hard-coded to the sky ramp (text-sky-*), so page and
+   section headers stayed blue under a themed palette. Flip the pale-sky accent
+   text onto the theme's own accent ramp (var(--ac-*), swapped per theme by
+   themeStore) so the whole app — headers included — follows the colour. */
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .text-sky-50,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .text-sky-100,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .text-sky-200,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .text-sky-300,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .hover\:text-sky-200:hover,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .hover\:text-sky-300:hover {
+  color: var(--ac-200) !important;
+}
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .text-sky-400,
+:is(html.theme-red, html.theme-green, html.theme-purple, html.theme-teal) .hover\:text-sky-400:hover {
+  color: var(--ac-400) !important;
+}
 
 html, body, #root { height: 100%; }
 body { margin: 0; }
+
+/* Pulsing red outline used to flag equipped items that break a rule (e.g. more
+   weapons in hand than the character has hands). Draws attention until fixed. */
+@keyframes flashRed {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); border-color: rgba(244, 63, 94, 0.9); }
+  50%      { box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.85); border-color: rgba(244, 63, 94, 1); }
+}
+.flash-red { animation: flashRed 0.9s ease-in-out infinite; }
+
+/* Critical-hit sparks on the dice overlay. CSS rather than SVG <animate>:
+   SMIL `begin` is relative to the document timeline, so an animation inserted
+   into a page that's been open a while starts already finished and freezes at
+   its end state (invisible). A CSS animation starts when the element mounts,
+   which is what a one-shot burst needs. */
+/* Opacity is held across most of the travel and dropped at the end. Fading it
+   in step with an eased transform makes the spark collapse to nothing within
+   the first ~15% of its flight, which reads as no spark at all. */
+@keyframes diceSpark {
+  0%   { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+  12%  { opacity: 1; }
+  70%  { opacity: 1; }
+  100% {
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.5);
+    opacity: 0;
+  }
+}
+.dice-spark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 9999px;
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.7);
+  pointer-events: none;
+  animation: diceSpark var(--dur) cubic-bezier(0.2, 0.7, 0.35, 1) var(--delay) both;
+}
+
+/* Steady gold highlight for a row with an unmet dependency (e.g. ammo out).
+   Less urgent than flash-red, which overrides it when both apply. */
+.hl-gold {
+  border-color: rgba(251, 191, 36, 0.9) !important;
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.5);
+}
 
 .ac-btn {
   background-color: var(--ac-700);

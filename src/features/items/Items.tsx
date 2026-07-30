@@ -9,12 +9,15 @@ import {
   formatCost,
   equipmentFor,
   magicItemsFor,
+  describeEquipment,
 } from '../../data/srd';
-import { Search, X, FlaskConical } from 'lucide-react';
+import { Search, X, FlaskConical, Swords, Shield, Sparkles, Backpack, Pencil, Check } from 'lucide-react';
+import { iconByKey, iconForCategory } from '../../data/itemIcons';
 import { Link, useLocation } from 'react-router-dom';
 import type { EquipmentItem, MagicItem } from '../../data/types';
 import { useStore } from '../../store';
 import type { HomebrewItem } from '../../store';
+import { useIsGM } from '../session/sessionStore';
 import { useSession } from '../session/sessionStore';
 import { useSharedHomebrew } from '../homebrew/sharedHomebrewStore';
 import { useCampaignSettings } from '../notes/campaignSettingsStore';
@@ -61,6 +64,7 @@ export default function Items() {
         weight: d.weight as number | undefined,
         properties: d.properties as string | undefined,
         desc: (d.desc as string) ?? '',
+        icon: d.icon as string | undefined,
         updatedAt: now,
       };
     });
@@ -217,11 +221,17 @@ export default function Items() {
                     (selected as EquipmentItem | null)?.index === e.index ? 'bg-slate-800' : 'hover:bg-slate-900'
                   }`}
                 >
-                  <div className="flex justify-between gap-2">
-                    <div className="text-sm font-medium truncate">{e.name}</div>
+                  <div className="flex justify-between gap-2 items-center">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {(() => {
+                        const { Icon, color } = gearKind(e);
+                        return <Icon size={14} style={{ color }} className="shrink-0" />;
+                      })()}
+                      <div className="text-sm font-medium truncate">{e.name}</div>
+                    </div>
                     <div className="text-xs text-slate-500 shrink-0 font-mono">{formatCost(e.cost)}</div>
                   </div>
-                  <div className="text-[11px] text-slate-500">
+                  <div className="text-[11px] text-slate-500 pl-6">
                     {e.equipment_category.name}
                     {e.weapon_category ? ` · ${e.weapon_category}` : ''}
                     {e.armor_category ? ` · ${e.armor_category}` : ''}
@@ -237,13 +247,16 @@ export default function Items() {
                     (selected as MagicItem | null)?.index === m.index ? 'bg-slate-800' : 'hover:bg-slate-900'
                   }`}
                 >
-                  <div className="flex justify-between gap-2">
-                    <div className="text-sm font-medium truncate">{m.name}</div>
+                  <div className="flex justify-between gap-2 items-center">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Sparkles size={14} className="shrink-0" style={{ color: '#c4b5fd' }} />
+                      <div className="text-sm font-medium truncate">{m.name}</div>
+                    </div>
                     <div className={`text-[10px] shrink-0 ${rarityColor(m.rarity.name)}`}>
                       {m.rarity.name}
                     </div>
                   </div>
-                  <div className="text-[11px] text-slate-500">{m.equipment_category.name}</div>
+                  <div className="text-[11px] text-slate-500 pl-6">{m.equipment_category.name}</div>
                 </button>
               ))}
             {tab === 'custom' &&
@@ -255,13 +268,19 @@ export default function Items() {
                     (selected as HomebrewItem | null)?.id === c.id ? 'bg-slate-800' : 'hover:bg-slate-900'
                   }`}
                 >
-                  <div className="flex justify-between gap-2">
-                    <div className="text-sm font-medium truncate">{c.name || 'Unnamed'}</div>
+                  <div className="flex justify-between gap-2 items-center">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {(() => {
+                        const Icon = iconByKey(c.icon) ?? iconForCategory(c.category);
+                        return <Icon size={14} className="shrink-0 text-slate-400" />;
+                      })()}
+                      <div className="text-sm font-medium truncate">{c.name || 'Unnamed'}</div>
+                    </div>
                     {c.rarity && (
                       <div className={`text-[10px] shrink-0 ${rarityColor(c.rarity)}`}>{c.rarity}</div>
                     )}
                   </div>
-                  <div className="text-[11px] text-slate-500">
+                  <div className="text-[11px] text-slate-500 pl-6">
                     {c.category}
                     {c.campaign ? ` · ${c.campaign}` : ''}
                   </div>
@@ -312,6 +331,14 @@ export default function Items() {
       </div>
     </div>
   );
+}
+
+/** Icon + tint for a gear row, derived from its structured stats so weapons,
+ *  armor, and plain gear read apart at a glance. */
+function gearKind(e: EquipmentItem): { Icon: typeof Swords; color: string } {
+  if (e.damage || e.weapon_category) return { Icon: Swords, color: '#f87171' };
+  if (e.armor_class || e.armor_category) return { Icon: Shield, color: '#60a5fa' };
+  return { Icon: Backpack, color: '#94a3b8' };
 }
 
 function rarityColor(r: string) {
@@ -389,13 +416,7 @@ function GearDetail({ item, onClose }: { item: EquipmentItem; onClose: () => voi
         </div>
       )}
 
-      {item.desc && item.desc.length > 0 && (
-        <div className="mt-6 space-y-3 text-slate-200 leading-relaxed">
-          {item.desc.map((p, i) => (
-            <p key={i}>{p}</p>
-          ))}
-        </div>
-      )}
+      <EditableDesc index={item.index} paragraphs={describeEquipment(item)} />
     </div>
   );
 }
@@ -414,11 +435,86 @@ function MagicDetail({ item, onClose }: { item: MagicItem; onClose: () => void }
           <X size={18} />
         </button>
       </div>
-      <div className="mt-6 space-y-3 text-slate-200 leading-relaxed">
-        {item.desc.map((p, i) => (
-          <p key={i}>{p}</p>
+      <EditableDesc index={item.index} paragraphs={item.desc} />
+    </div>
+  );
+}
+
+/** Description block for an SRD item. Renders the GM's override when present,
+ *  otherwise the supplied paragraphs (real SRD prose, or the stat-derived
+ *  fallback for gear that ships without any). GMs get an inline editor to
+ *  fill in or replace the text; clearing it reverts to the default. */
+function EditableDesc({ index, paragraphs }: { index: string; paragraphs: string[] }) {
+  const isGM = useIsGM();
+  const override = useStore((s) => s.itemDescOverrides[index]);
+  const setOverride = useStore((s) => s.setItemDescOverride);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const shown = override ?? paragraphs.join('\n\n');
+  const isFallback = !override;
+
+  if (editing) {
+    return (
+      <div className="mt-6">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={8}
+          autoFocus
+          className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200 leading-relaxed"
+        />
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            onClick={() => {
+              setOverride(index, draft);
+              setEditing(false);
+            }}
+            className="flex items-center gap-1 px-3 py-1 text-xs bg-sky-700 hover:bg-sky-600 text-slate-50 rounded"
+          >
+            <Check size={12} /> Save
+          </button>
+          <button
+            onClick={() => setEditing(false)}
+            className="px-3 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
+          >
+            Cancel
+          </button>
+          {override && (
+            <button
+              onClick={() => {
+                setOverride(index, '');
+                setEditing(false);
+              }}
+              className="ml-auto px-3 py-1 text-xs text-rose-400 hover:text-rose-300"
+            >
+              Reset to default
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-6 group">
+      <div className="space-y-3 text-slate-200 leading-relaxed">
+        {shown.split(/\n\n+/).map((p, i) => (
+          <p key={i} className="whitespace-pre-wrap">{p}</p>
         ))}
       </div>
+      {isGM && (
+        <button
+          onClick={() => {
+            setDraft(shown);
+            setEditing(true);
+          }}
+          className="mt-3 inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-sky-300"
+        >
+          <Pencil size={11} />
+          {isFallback ? 'Edit description' : 'Edit description (customized)'}
+        </button>
+      )}
     </div>
   );
 }
@@ -441,7 +537,13 @@ function CustomDetail({ item, onClose, canEdit }: { item: HomebrewItem; onClose:
     <div className="max-w-2xl px-8 py-6">
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="font-serif text-3xl text-sky-200">{item.name || 'Unnamed'}</h2>
+          <h2 className="font-serif text-3xl text-sky-200 flex items-center gap-2.5">
+            {(() => {
+              const Icon = iconByKey(item.icon) ?? iconForCategory(item.category);
+              return <Icon size={26} className="shrink-0 text-slate-400" />;
+            })()}
+            <span>{item.name || 'Unnamed'}</span>
+          </h2>
           <div className={`text-sm italic ${item.rarity ? rarityColor(item.rarity) : 'text-slate-400'}`}>
             {item.category}
             {item.rarity ? ` · ${item.rarity}` : ''}

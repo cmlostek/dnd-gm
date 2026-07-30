@@ -57,7 +57,7 @@ type SessionState = {
   createCampaign: (
     name: string,
     displayName: string,
-    opts?: { hpRollingMethod?: 'avg' | 'roll' | 'manual' },
+    opts?: { hpRollingMethod?: 'avg' | 'roll' | 'manual'; encumbrance?: boolean },
   ) => Promise<void>;
   joinCampaign: (code: string, displayName: string) => Promise<void>;
   switchToCampaign: (campaignId: string) => Promise<void>;
@@ -311,16 +311,19 @@ export const useSession = create<SessionState>((set, get) => ({
       if (mErr) throw mErr;
       localStorage.setItem(STORAGE_KEY, campaign.id);
       localStorage.setItem(NAME_KEY, displayName);
-      // Seed the campaign's settings row with the GM's chosen HP method.
-      // Falls back to DEFAULTS (avg) if the user didn't pick.
-      if (opts?.hpRollingMethod) {
+      // Seed the campaign's settings row with the GM's creation choices.
+      // Falls back to DEFAULTS if the user didn't pick anything.
+      const seed: Record<string, unknown> = {};
+      if (opts?.hpRollingMethod) seed.hpRollingMethod = opts.hpRollingMethod;
+      if (opts?.encumbrance !== undefined) seed.encumbrance = opts.encumbrance;
+      if (Object.keys(seed).length > 0) {
         try {
           await supabase
             .from('campaign_settings')
             .upsert(
               {
                 campaign_id: campaign.id,
-                settings: { hpRollingMethod: opts.hpRollingMethod },
+                settings: seed,
               },
               { onConflict: 'campaign_id' },
             );
@@ -329,7 +332,7 @@ export const useSession = create<SessionState>((set, get) => ({
           try {
             localStorage.setItem(
               `dnd-gm:campaignSettings:${campaign.id}`,
-              JSON.stringify({ hpRollingMethod: opts.hpRollingMethod }),
+              JSON.stringify(seed),
             );
           } catch {
             /* private mode */

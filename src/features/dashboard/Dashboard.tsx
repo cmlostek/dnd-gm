@@ -13,12 +13,13 @@ import { useNotes, canViewNote, canEditNote, EMPTY_PERMS, type Note, type NotePe
 import { supabase } from '../../lib/supabase';
 import DiceRoller from '../dice/DiceRoller';
 import CharacterSheet from './CharacterSheet';
+import { useDashboardPref } from './dashboardPrefStore';
 import CharacterBuilder from './CharacterBuilder';
 import MemberProfileModal from './MemberProfileModal';
 import CampaignSpectatorView from './CampaignSpectatorView';
 import NotePeekModal from './NotePeekModal';
 
-type DashboardTab = 'profile' | 'character' | 'chat' | 'dice' | 'manage';
+type DashboardTab = 'profile' | 'character' | 'chat' | 'dice';
 
 /**
  * Player dashboard — landing page after entering a campaign. Phase 1: display
@@ -108,11 +109,9 @@ export default function Dashboard() {
 
   const viewAsPlayer = useSession((s) => s.viewAsPlayer);
   const isGM = (role === 'gm' || role === 'cogm') && !viewAsPlayer;
-  const [tab, setTab] = useState<DashboardTab>('profile');
-  // If the user was on Manage when their role changed, snap them back.
-  useEffect(() => {
-    if (tab === 'manage' && !isGM) setTab('profile');
-  }, [tab, isGM]);
+  // Land on the user's preferred default tab (Settings → Display). Read once at
+  // mount so navigating between tabs afterwards isn't overridden.
+  const [tab, setTab] = useState<DashboardTab>(() => useDashboardPref.getState().defaultTab);
 
   // On the very first dashboard load for a player who's joined a campaign and
   // has no claimed character yet, auto-open the builder so onboarding is
@@ -214,11 +213,6 @@ export default function Dashboard() {
               <Section title="Campaign members">
                 <CampaignMembersPanel selfId={userId} onOpenProfile={setProfileTarget} />
               </Section>
-
-              <div className="pt-6 border-t border-slate-800">
-                <div className="text-[10px] uppercase tracking-wider text-rose-400 mb-2">Danger zone</div>
-                <LeaveCampaignRow />
-              </div>
             </div>
           )}
 
@@ -261,11 +255,6 @@ export default function Dashboard() {
             </div>
           )}
 
-          {tab === 'manage' && isGM && (
-            <div className="px-6 py-6">
-              <CampaignManagementPanel selfId={userId} campaignId={campaignId ?? ''} />
-            </div>
-          )}
         </div>
       </div>
 
@@ -327,7 +316,6 @@ function TabBar({
     { id: 'character', label: 'Character', icon: ScrollText },
     { id: 'chat', label: 'Chat', icon: MessageCircle },
     { id: 'dice', label: 'Dice', icon: Dice6 },
-    { id: 'manage', label: 'Campaign Management', icon: Shield, gmOnly: true },
   ];
   return (
     <div className="border-b border-slate-800 px-2 sm:px-4 flex gap-1 overflow-x-auto scrollbar-none">
@@ -360,7 +348,7 @@ function TabBar({
  * existing campaign_members ON DELETE CASCADE chain (set via the schema).
  * RLS allows is_gm() to delete.
  */
-function CampaignManagementPanel({
+export function CampaignManagementPanel({
   selfId,
   campaignId,
 }: {
@@ -588,7 +576,7 @@ function ClearChatRow({ campaignId }: { campaignId: string }) {
   );
 }
 
-function LeaveCampaignRow() {
+export function LeaveCampaignRow() {
   const leaveCampaign = useSession((s) => s.leaveCampaign);
   const campaignName = useSession((s) => s.campaignName);
   return (

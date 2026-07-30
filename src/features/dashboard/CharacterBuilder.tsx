@@ -924,18 +924,38 @@ function AbilitiesStep({
         </div>
       )}
       {method === 'roll' && (
-        <div className="flex items-center gap-3 mb-3">
-          <button
-            onClick={rollSet}
-            className="px-3 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 text-white flex items-center gap-1"
-          >
-            <Dices size={12} /> Roll a set
-          </button>
-          {rolled && (
-            <div className="text-sm text-slate-300">
-              Rolled: <span className="font-mono">{rolled.join(' · ')}</span>
-            </div>
-          )}
+        <div className="mb-3 space-y-2">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={rollSet}
+              className="px-3 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 text-white flex items-center gap-1"
+            >
+              <Dices size={12} /> Roll a set
+            </button>
+            <span className="text-xs text-slate-500">or enter your own rolls</span>
+          </div>
+          {/* Editable set — auto-roll fills these, or type physical-dice results
+              here. The assignment dropdowns below draw from this set. */}
+          <div className="flex flex-wrap gap-2">
+            {(rolled ?? [8, 8, 8, 8, 8, 8]).map((v, i) => (
+              <input
+                key={i}
+                type="number"
+                min={3}
+                max={18}
+                value={v}
+                onChange={(e) => {
+                  const n = Math.max(3, Math.min(18, parseInt(e.target.value || '3', 10) || 3));
+                  setRolled((prev) => {
+                    const next = [...(prev ?? [8, 8, 8, 8, 8, 8])];
+                    next[i] = n;
+                    return next;
+                  });
+                }}
+                className="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-center text-sm font-mono"
+              />
+            ))}
+          </div>
         </div>
       )}
 

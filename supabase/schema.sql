@@ -747,6 +747,34 @@ create policy "avatars_owner_delete"
   on storage.objects for delete to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = auth.uid()::text);
 
+-- Note images: permanent hosting for images embedded in notes (replaces
+-- pasting expiring external URLs). See
+-- migrations/20260721000000_note_images_bucket.sql. Uploads are scoped to a
+-- campaign the user belongs to (first path segment = campaign_id); read is
+-- public because images are embedded via <img src> and viewed by
+-- players/spectators (random-UUID paths keep them unguessable).
+insert into storage.buckets (id, name, public)
+values ('note-images', 'note-images', true)
+on conflict (id) do nothing;
+
+drop policy if exists note_images_insert on storage.objects;
+create policy note_images_insert on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'note-images'
+    and public.is_member(((storage.foldername(name))[1])::uuid)
+  );
+
+drop policy if exists note_images_delete on storage.objects;
+create policy note_images_delete on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'note-images'
+    and public.is_member(((storage.foldername(name))[1])::uuid)
+  );
+
+drop policy if exists note_images_select on storage.objects;
+create policy note_images_select on storage.objects for select to public
+  using (bucket_id = 'note-images');
+
 
 -- =============================================
 -- SECTION 10 — Chat messages (party chat, whispers, mentions, edit/delete)

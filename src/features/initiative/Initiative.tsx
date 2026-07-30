@@ -170,6 +170,16 @@ export default function Initiative() {
     return () => clearInterval(id);
   }, [isGM, combatants.length, sort]);
 
+  // Sort once when the page opens so the tracker always presents in initiative
+  // order. GM only (sort writes order + is RLS-gated); runs a single time per
+  // mount, after the combatants have loaded.
+  const didAutoSort = useRef(false);
+  useEffect(() => {
+    if (!isGM || !loaded || combatants.length === 0 || didAutoSort.current) return;
+    didAutoSort.current = true;
+    sort();
+  }, [isGM, loaded, combatants.length, sort]);
+
   const [rosterOpen, setRosterOpen] = useState(false);
 
   const adjustHp = (id: string, delta: number) => {
@@ -316,7 +326,17 @@ export default function Initiative() {
                     c.isPC ? 'bg-emerald-900/60 text-emerald-200' : 'bg-rose-900/60 text-rose-200'
                   }`}>
                     <div className="text-[9px] uppercase tracking-wider opacity-70">Init</div>
-                    <div className="text-lg leading-none">{c.initiative}</div>
+                    {isGM ? (
+                      <input
+                        type="number"
+                        value={c.initiative}
+                        onChange={(e) => update(c.id, { initiative: parseInt(e.target.value || '0', 10) || 0 })}
+                        className="w-10 bg-transparent text-lg leading-none text-center outline-none focus:bg-black/25 rounded"
+                        title="Initiative — edit directly"
+                      />
+                    ) : (
+                      <div className="text-lg leading-none">{c.initiative}</div>
+                    )}
                   </div>
 
                   <div className="flex-1 min-w-0">

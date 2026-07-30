@@ -1,6 +1,15 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMap, MAX_DAMAGE_LOG, type DamageLogEntry, type MapShape, type MapToken, type MapScene } from './mapStore';
+import GridLayer from './canvas/layers/GridLayer';
+import PingsLayer from './canvas/layers/PingsLayer';
+import ImageLayers from './canvas/layers/ImageLayers';
+import ShapesLayer from './canvas/layers/ShapesLayer';
+import TokensLayer from './canvas/layers/TokensLayer';
+import FogLayer from './canvas/layers/FogLayer';
+import WallsLayer from './canvas/layers/WallsLayer';
+import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
+import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
 
@@ -44,9 +53,11 @@ import {
   ArrowUp,
   ArrowDown,
   Pencil,
+  Cloud,
+  BrickWall,
 } from 'lucide-react';
 
-type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit';
+type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog' | 'wall';
 
 type Ping = { id: string; x: number; y: number; color: string };
 type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' };
@@ -435,6 +446,14 @@ export default function MapBoard() {
   const addToken = useMap((s) => s.addToken);
   const updateToken = useMap((s) => s.updateToken);
   const removeToken = useMap((s) => s.removeToken);
+  const setFogEnabled = useMap((s) => s.setFogEnabled);
+  const setSceneFogMode = useMap((s) => s.setFogMode);
+  const paintFogLocal = useMap((s) => s.paintFogLocal);
+  const commitFog = useMap((s) => s.commitFog);
+  const clearFog = useMap((s) => s.clearFog);
+  const addWall = useMap((s) => s.addWall);
+  const removeWall = useMap((s) => s.removeWall);
+  const clearWalls = useMap((s) => s.clearWalls);
 
   // The GM may stage a non-active scene by setting gm_preview_scene_id; their
   // local view follows that, while players always render the active scene.
@@ -458,6 +477,11 @@ export default function MapBoard() {
 
   // ── Tool state ───────────────────────────────────────────────────────────
   const [tool, setTool] = useState<Tool>('select');
+  // Fog brush settings (GM). Mode toggles paint-to-reveal vs paint-to-hide;
+  // brush is the square side length in cells (1, 3, or 5).
+  const [fogMode, setFogMode] = useState<'reveal' | 'hide'>('reveal');
+  const [fogBrush, setFogBrush] = useState(3);
+  const fogPaintingRef = useRef(false);
   const [ruler, setRuler] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const [drafting, setDrafting] = useState<{ x: number; y: number } | null>(null);
   // Live cursor position while drafting a shape — drives the dashed preview
@@ -466,30 +490,20 @@ export default function MapBoard() {
   // Shape drag state — { id, ox, oy } where ox/oy are the offsets from the
   // shape's anchor to the mouse-down point, so the shape doesn't snap to
   // the cursor on grab.
-  const [shapeDrag, setShapeDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
-  const [shapeDragPos, setShapeDragPos] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [shapeDrag, setShapeDrag] = useState<ShapeDrag | null>(null);
+  const [shapeDragPos, setShapeDragPos] = useState<ShapeDragPos | null>(null);
   // Image-layer drag state. `mode` is either 'move' (translate x/y) or
   // 'resize' (grow w/h from the bottom-right corner). ox/oy is the offset
   // from the anchor point to the mouse-down so the layer doesn't snap to
   // the cursor on grab.
-  const [layerDrag, setLayerDrag] = useState<
-    | { id: string; mode: 'move'; ox: number; oy: number }
-    | { id: string; mode: 'resize'; ox: number; oy: number; startW: number; startH: number; startX: number; startY: number }
-    | null
-  >(null);
-  const [layerDragPos, setLayerDragPos] = useState<
-    { id: string; x: number; y: number; w: number; h: number } | null
-  >(null);
+  const [layerDrag, setLayerDrag] = useState<LayerDrag | null>(null);
+  const [layerDragPos, setLayerDragPos] = useState<LayerDragPos | null>(null);
   // Token resize state — the GM grabs the bottom-right of a token in Edit
   // mode to scale its diameter. We use the dominant axis (max of dx/dy) so
   // square-ish drags feel predictable; the token is a circle so width and
   // height are always equal.
-  const [tokenResize, setTokenResize] = useState<
-    { id: string; ox: number; oy: number } | null
-  >(null);
-  const [tokenResizePos, setTokenResizePos] = useState<
-    { id: string; size: number } | null
-  >(null);
+  const [tokenResize, setTokenResize] = useState<TokenResize | null>(null);
+  const [tokenResizePos, setTokenResizePos] = useState<TokenResizePos | null>(null);
   const [selectedShapeColor, setSelectedShapeColor] = useState(SHAPE_COLORS[0]);
   const [tokenName, setTokenName] = useState('');
   const [tokenEmoji, setTokenEmoji] = useState('');
@@ -702,13 +716,20 @@ export default function MapBoard() {
   }, [canvasW, canvasH, sceneLayers, isGM]);
 
   // Auto-fit when the canvas grows/shrinks (campaign load, first image upload).
+  // Keyed on the canvas dimensions only — NOT on fitToScreen's identity, which
+  // changes on every scene edit (adding a shape rebuilds sceneLayers). Without
+  // this guard, drawing on the map re-ran the fit and snapped zoom/pan back.
+  const fitRef = useRef(fitToScreen);
+  fitRef.current = fitToScreen;
+  const lastFitDims = useRef('');
   useEffect(() => {
     if (!canvasW || !canvasH) return;
-    const id = requestAnimationFrame(() => {
-      fitToScreen();
-    });
+    const key = `${canvasW}x${canvasH}`;
+    if (lastFitDims.current === key) return;
+    lastFitDims.current = key;
+    const id = requestAnimationFrame(() => fitRef.current());
     return () => cancelAnimationFrame(id);
-  }, [fitToScreen, canvasW, canvasH]);
+  }, [canvasW, canvasH]);
 
   // ── Focus a token from a deep link (e.g. a ritual countdown's "Map" button
   //    navigates to /map?focusOwner=…&focusName=…). Centre the camera on the
@@ -1103,6 +1124,27 @@ export default function MapBoard() {
   }, [draggingTokenId, localDrag]);
 
   // ── Mouse handlers ────────────────────────────────────────────────────────
+  /** Paint the brush's square of cells at a logical point into local fog. */
+  const paintFogAt = (p: { x: number; y: number }) => {
+    if (!currentSceneId || !currentScene) return;
+    const cell = currentScene.fog.cell || 50;
+    const cx = Math.floor(p.x / cell);
+    const cy = Math.floor(p.y / cell);
+    const r = Math.floor(fogBrush / 2);
+    const maxCol = Math.ceil(canvasW / cell) - 1;
+    const maxRow = Math.ceil(canvasH / cell) - 1;
+    const cells: string[] = [];
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        const col = cx + dx;
+        const row = cy + dy;
+        if (col < 0 || row < 0 || col > maxCol || row > maxRow) continue;
+        cells.push(`${col},${row}`);
+      }
+    }
+    if (cells.length) paintFogLocal(currentSceneId, cells, fogMode === 'reveal');
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (draggingTokenId) return;
     if (!campaignId) return;
@@ -1181,6 +1223,16 @@ export default function MapBoard() {
     }
 
     if (!isGM) return;
+    if (tool === 'fog') {
+      fogPaintingRef.current = true;
+      paintFogAt(p);
+      return;
+    }
+    if (tool === 'wall') {
+      const g = mapGridSize || 50;
+      setDrafting({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
+      return;
+    }
     if (tool === 'circle' || tool === 'square' || tool === 'cone') {
       setDrafting(p);
       return;
@@ -1197,6 +1249,11 @@ export default function MapBoard() {
 
     const p = screenToLogical(e);
 
+    if (fogPaintingRef.current) {
+      paintFogAt(p);
+      return;
+    }
+
     if (draggingTokenId) {
       const sp = snap({ x: p.x - dragOffset.x, y: p.y - dragOffset.y });
       setLocalDrag({ id: draggingTokenId, x: sp.x, y: sp.y });
@@ -1206,7 +1263,12 @@ export default function MapBoard() {
       setRuler({ ...ruler, x2: p.x, y2: p.y });
     }
     if (drafting) {
-      setDraftEnd(p);
+      if (tool === 'wall') {
+        const g = mapGridSize || 50;
+        setDraftEnd({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
+      } else {
+        setDraftEnd(p);
+      }
     }
     if (shapeDrag) {
       setShapeDragPos({ id: shapeDrag.id, x: p.x - shapeDrag.ox, y: p.y - shapeDrag.oy });
@@ -1257,6 +1319,11 @@ export default function MapBoard() {
       isPanningRef.current = false;
       return;
     }
+    if (fogPaintingRef.current) {
+      fogPaintingRef.current = false;
+      if (currentSceneId) void commitFog(currentSceneId);
+      return;
+    }
     if (draggingTokenId) {
       commitDrag();
       return;
@@ -1289,6 +1356,19 @@ export default function MapBoard() {
       }
       setShapeDrag(null);
       setShapeDragPos(null);
+      return;
+    }
+    if (tool === 'wall' && drafting && draftEnd && isGM && currentSceneId) {
+      // Snapped endpoints; drop zero-length walls from a stray click.
+      if (drafting.x !== draftEnd.x || drafting.y !== draftEnd.y) {
+        void addWall(currentSceneId, {
+          id: uid(),
+          x1: drafting.x, y1: drafting.y,
+          x2: draftEnd.x, y2: draftEnd.y,
+        });
+      }
+      setDrafting(null);
+      setDraftEnd(null);
       return;
     }
     if (drafting && isGM && currentSceneId) {
@@ -1395,6 +1475,40 @@ export default function MapBoard() {
       if (localDrag && localDrag.id === t.id) return { ...t, x: localDrag.x, y: localDrag.y };
       return t;
     });
+
+  // Dynamic line of sight: one visibility polygon per party token (owned =
+  // PC), unioned at render time into the fog mask. Computed from committed
+  // token positions (not localDrag) so it recomputes on drag-end rather than
+  // every mousemove — the O(endpoints×walls) cost isn't worth per-frame.
+  // Deps are the specific fog fields (not the whole scene) so accumulating
+  // explored cells below doesn't retrigger the LoS computation in a loop.
+  const fogEnabled = currentScene?.fog.enabled ?? false;
+  const sceneFogMode = currentScene?.fog.mode ?? 'manual';
+  const walls = currentScene?.walls;
+  const visionPolys = useMemo<Vec[][]>(() => {
+    if (!fogEnabled || sceneFogMode !== 'dynamic' || !walls) return [];
+    const origins = tokens.filter((t) => {
+      const onScene = t.scene_id ? t.scene_id === currentSceneId : currentSceneId === state.active_scene_id;
+      return onScene && !!t.owner_user_id;
+    });
+    return origins.map((t) => computeVisibility({ x: t.x, y: t.y }, walls, canvasW, canvasH));
+  }, [fogEnabled, sceneFogMode, walls, tokens, currentSceneId, state.active_scene_id, canvasW, canvasH]);
+
+  // Explored memory: mark every fog cell whose centre falls inside the current
+  // sight as "seen" so it stays dimly lit after the party moves on. Runs when
+  // vision changes (token move / wall edit), reading the freshest explored set
+  // from the store to avoid a stale closure; the store no-ops if nothing's new.
+  const addExplored = useMap((s) => s.addExplored);
+  useEffect(() => {
+    if (!currentSceneId || !fogEnabled || sceneFogMode !== 'dynamic' || visionPolys.length === 0) return;
+    const scene = useMap.getState().scenes.find((s) => s.id === currentSceneId);
+    if (!scene) return;
+    const seen = new Set(scene.fog.explored);
+    const added = cellsInVision(visionPolys, scene.fog.cell || 50, canvasW, canvasH).filter(
+      (k) => !seen.has(k),
+    );
+    if (added.length) void addExplored(currentSceneId, added);
+  }, [visionPolys, fogEnabled, sceneFogMode, currentSceneId, canvasW, canvasH, addExplored]);
 
   // Sidebar order: match each token to an initiative combatant by name
   // (case-insensitive) and use that initiative as the sort key — highest
@@ -1643,6 +1757,8 @@ export default function MapBoard() {
               {toolButton('circle', CircleIcon, 'Circle AoE', true)}
               {toolButton('square', SquareIcon, 'Square AoE', true)}
               {toolButton('cone', Triangle, 'Cone AoE', true)}
+              {toolButton('fog', Cloud, 'Fog of war — paint to reveal/hide for players', true)}
+              {toolButton('wall', BrickWall, 'Walls — draw sight blockers (players never see them)', true)}
             </div>
             <div className="flex gap-1 mt-1">
               <button
@@ -1833,6 +1949,131 @@ export default function MapBoard() {
                   />
                 ))}
               </div>
+            </div>
+          )}
+
+          {isGM && tool === 'fog' && currentScene && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wider text-slate-500">Fog of war</div>
+                <button
+                  onClick={() => currentSceneId && void setFogEnabled(currentSceneId, !currentScene.fog.enabled)}
+                  className={`px-2 py-0.5 text-[11px] rounded border ${
+                    currentScene.fog.enabled
+                      ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  {currentScene.fog.enabled ? 'On' : 'Off'}
+                </button>
+              </div>
+
+              {!currentScene.fog.enabled ? (
+                <div className="text-[11px] text-slate-500">
+                  Turn fog on, then pick how it's driven. Players see black where it's hidden; you see a dim tint.
+                </div>
+              ) : (
+                <>
+                  {/* Manual paint vs dynamic line-of-sight */}
+                  <div className="flex rounded overflow-hidden border border-slate-800">
+                    {(['manual', 'dynamic'] as const).map((m) => (
+                      <button
+                        key={m}
+                        onClick={() => currentSceneId && void setSceneFogMode(currentSceneId, m)}
+                        className={`flex-1 py-1 text-[11px] ${
+                          currentScene.fog.mode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                        }`}
+                      >
+                        {m === 'manual' ? 'Paint by hand' : 'Line of sight'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {currentScene.fog.mode === 'manual' ? (
+                    <>
+                      {/* Reveal vs hide */}
+                      <div className="flex rounded overflow-hidden border border-slate-800">
+                        {(['reveal', 'hide'] as const).map((m) => (
+                          <button
+                            key={m}
+                            onClick={() => setFogMode(m)}
+                            className={`flex-1 py-1 text-[11px] flex items-center justify-center gap-1 ${
+                              fogMode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                            }`}
+                          >
+                            {m === 'reveal' ? <Eye size={12} /> : <EyeOff size={12} />}
+                            {m === 'reveal' ? 'Reveal' : 'Hide'}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Brush size */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-slate-500">Brush</span>
+                        <div className="flex gap-1">
+                          {[1, 3, 5].map((b) => (
+                            <button
+                              key={b}
+                              onClick={() => setFogBrush(b)}
+                              className={`w-7 py-0.5 text-[11px] rounded border font-mono ${
+                                fogBrush === b
+                                  ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                              }`}
+                            >
+                              {b}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => currentSceneId && void clearFog(currentSceneId)}
+                        className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      >
+                        Cover everything again
+                      </button>
+                      <div className="text-[10px] text-slate-600">
+                        Drag on the map to {fogMode === 'reveal' ? 'reveal' : 're-hide'} squares.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-[10px] text-slate-600 leading-relaxed">
+                        Sight is cast from each party token against your walls ({currentScene.walls.length}). Draw walls with the Walls tool. Move a token to update what the party sees; seen areas stay dimly lit.
+                      </div>
+                      {currentScene.fog.explored.length > 0 && (
+                        <button
+                          onClick={() => currentSceneId && void clearFog(currentSceneId)}
+                          className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                        >
+                          Reset exploration
+                        </button>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {isGM && tool === 'wall' && currentScene && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wider text-slate-500">Walls</div>
+                <span className="text-[11px] text-slate-500 font-mono">{currentScene.walls.length}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Drag to draw a sight-blocking wall (snaps to the grid). Double-click a wall to delete. Players never see walls — they only feel them through line of sight.
+              </div>
+              {currentScene.walls.length > 0 && (
+                <button
+                  onClick={() => currentSceneId && void clearWalls(currentSceneId)}
+                  className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                >
+                  Clear all walls
+                </button>
+              )}
             </div>
           )}
 
@@ -2031,250 +2272,39 @@ export default function MapBoard() {
                   underneath later ones. In select mode the GM can drag a
                   layer to reposition it and use the bottom-right handle to
                   resize. */}
-              {sceneLayers.map((layer) => {
-                if (layer.hidden && !isGM) return null;
-                // Layer drag/resize is gated on the dedicated Layers tool so
-                // the default Select tool can keep grabbing tokens and shapes
-                // without the GM accidentally moving the battlemat under them.
-                const draggable = isGM && tool === 'edit';
-                const live = layerDragPos && layerDragPos.id === layer.id;
-                const lx = live ? layerDragPos.x : layer.x;
-                const ly = live ? layerDragPos.y : layer.y;
-                const lw = live ? layerDragPos.w : layer.w;
-                const lh = live ? layerDragPos.h : layer.h;
-                const handleR = Math.max(6, 10 / zoom);
-                return (
-                  <g key={layer.id}>
-                    <image
-                      href={layer.url}
-                      x={lx}
-                      y={ly}
-                      width={lw}
-                      height={lh}
-                      preserveAspectRatio="none"
-                      opacity={layer.hidden ? 0.25 : 1}
-                      transform={
-                        layer.rotation
-                          ? `rotate(${layer.rotation} ${lx + lw / 2} ${ly + lh / 2})`
-                          : undefined
-                      }
-                      pointerEvents={draggable ? 'all' : 'none'}
-                      style={{ cursor: draggable ? (live ? 'grabbing' : 'move') : 'default' }}
-                      onMouseDown={
-                        draggable
-                          ? (e) => {
-                              e.stopPropagation();
-                              const p = screenToLogical(e);
-                              setLayerDrag({
-                                id: layer.id,
-                                mode: 'move',
-                                ox: p.x - layer.x,
-                                oy: p.y - layer.y,
-                              });
-                              setLayerDragPos({ id: layer.id, x: layer.x, y: layer.y, w: layer.w, h: layer.h });
-                            }
-                          : undefined
-                      }
-                    />
-                    {/* Bottom-right resize handle — only shown to the GM in
-                        select mode so it doesn't clutter the player view. */}
-                    {draggable && (
-                      <>
-                        <rect
-                          x={lx + lw - handleR}
-                          y={ly + lh - handleR}
-                          width={handleR * 2}
-                          height={handleR * 2}
-                          fill="#0ea5e9"
-                          stroke="#fafaf9"
-                          strokeWidth={1 / zoom}
-                          style={{ cursor: 'nwse-resize' }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            const p = screenToLogical(e);
-                            setLayerDrag({
-                              id: layer.id,
-                              mode: 'resize',
-                              ox: p.x - (layer.x + layer.w),
-                              oy: p.y - (layer.y + layer.h),
-                              startW: layer.w,
-                              startH: layer.h,
-                              startX: layer.x,
-                              startY: layer.y,
-                            });
-                            setLayerDragPos({ id: layer.id, x: layer.x, y: layer.y, w: layer.w, h: layer.h });
-                          }}
-                        />
-                        {/* Thin selection border so it's obvious which layer
-                            the corner handle belongs to when several overlap. */}
-                        <rect
-                          x={lx}
-                          y={ly}
-                          width={lw}
-                          height={lh}
-                          fill="none"
-                          stroke="#0ea5e9"
-                          strokeOpacity={0.5}
-                          strokeDasharray={`${4 / zoom} ${4 / zoom}`}
-                          strokeWidth={1 / zoom}
-                          pointerEvents="none"
-                        />
-                      </>
-                    )}
-                  </g>
-                );
-              })}
+              <ImageLayers
+                layers={sceneLayers}
+                isGM={isGM}
+                editing={tool === 'edit'}
+                zoom={zoom}
+                layerDragPos={layerDragPos}
+                screenToLogical={screenToLogical}
+                onLayerDragStart={(drag, pos) => { setLayerDrag(drag); setLayerDragPos(pos); }}
+              />
 
               {/* Grid overlay */}
-              {mapShowGrid && mapGridSize >= 4 && (
-                <g>
-                  <defs>
-                    <pattern
-                      id="map-grid"
-                      width={mapGridSize}
-                      height={mapGridSize}
-                      patternUnits="userSpaceOnUse"
-                    >
-                      <path
-                        d={`M ${mapGridSize} 0 L 0 0 0 ${mapGridSize}`}
-                        fill="none"
-                        stroke="#ffffff18"
-                        strokeWidth={1 / zoom}
-                      />
-                    </pattern>
-                  </defs>
-                  <rect
-                    x={0} y={0}
-                    width={canvasW} height={canvasH}
-                    fill="url(#map-grid)"
-                    pointerEvents="none"
-                  />
-                </g>
-              )}
+              <GridLayer
+                showGrid={mapShowGrid}
+                gridSize={mapGridSize}
+                canvasW={canvasW}
+                canvasH={canvasH}
+                zoom={zoom}
+              />
 
-              {/* Shapes */}
-              {sceneShapes.map((s) => {
-                const onDbl = isGM && currentSceneId ? () => void removeShape(currentSceneId, s.id) : undefined;
-                const draggable = isGM && tool === 'select';
-                const live = shapeDragPos && shapeDragPos.id === s.id;
-                const lx = live ? shapeDragPos.x : s.x;
-                const ly = live ? shapeDragPos.y : s.y;
-                const onMouseDown = draggable
-                  ? (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      const p = screenToLogical(e);
-                      setShapeDrag({ id: s.id, ox: p.x - s.x, oy: p.y - s.y });
-                      setShapeDragPos({ id: s.id, x: s.x, y: s.y });
-                    }
-                  : undefined;
-                const cursor = draggable ? (live ? 'grabbing' : 'grab') : 'default';
-                if (s.kind === 'circle') {
-                  return (
-                    <circle
-                      key={s.id} cx={lx} cy={ly} r={s.r}
-                      fill={s.color} stroke={s.color.slice(0, 7)} strokeWidth={2 / zoom}
-                      onDoubleClick={onDbl}
-                      onMouseDown={onMouseDown}
-                      style={{ cursor }}
-                    />
-                  );
-                }
-                if (s.kind === 'square') {
-                  return (
-                    <rect
-                      key={s.id} x={lx} y={ly} width={s.w} height={s.h}
-                      fill={s.color} stroke={s.color.slice(0, 7)} strokeWidth={2 / zoom}
-                      onDoubleClick={onDbl}
-                      onMouseDown={onMouseDown}
-                      style={{ cursor }}
-                    />
-                  );
-                }
-                if (s.kind === 'cone') {
-                  const len = Math.hypot(s.dx, s.dy);
-                  if (len === 0) return null;
-                  const ux = s.dx / len; const uy = s.dy / len;
-                  const px = -uy; const py = ux;
-                  const half = len / 2;
-                  const tipX = lx + s.dx; const tipY = ly + s.dy;
-                  return (
-                    <polygon
-                      key={s.id}
-                      points={`${lx},${ly} ${tipX + px * half},${tipY + py * half} ${tipX - px * half},${tipY - py * half}`}
-                      fill={s.color} stroke={s.color.slice(0, 7)} strokeWidth={2 / zoom}
-                      onDoubleClick={onDbl}
-                      onMouseDown={onMouseDown}
-                      style={{ cursor }}
-                    />
-                  );
-                }
-                return null;
-              })}
-
-              {/* Draft shape outline — dashed preview of the shape the GM
-                  is currently dragging out. Cleared on mouseup. */}
-              {drafting && draftEnd && (tool === 'circle' || tool === 'square' || tool === 'cone') && (() => {
-                const dx = draftEnd.x - drafting.x;
-                const dy = draftEnd.y - drafting.y;
-                const dash = `${6 / zoom} ${4 / zoom}`;
-                const sw = 2 / zoom;
-                if (tool === 'circle') {
-                  const r = Math.hypot(dx, dy);
-                  return (
-                    <g pointerEvents="none">
-                      <circle
-                        cx={drafting.x} cy={drafting.y} r={r}
-                        fill={selectedShapeColor}
-                        fillOpacity={0.25}
-                        stroke={selectedShapeColor}
-                        strokeWidth={sw}
-                        strokeDasharray={dash}
-                      />
-                    </g>
-                  );
-                }
-                if (tool === 'square') {
-                  return (
-                    <g pointerEvents="none">
-                      <rect
-                        x={Math.min(drafting.x, draftEnd.x)}
-                        y={Math.min(drafting.y, draftEnd.y)}
-                        width={Math.abs(dx)}
-                        height={Math.abs(dy)}
-                        fill={selectedShapeColor}
-                        fillOpacity={0.25}
-                        stroke={selectedShapeColor}
-                        strokeWidth={sw}
-                        strokeDasharray={dash}
-                      />
-                    </g>
-                  );
-                }
-                // Cone: draw a triangle from origin to the cursor with a
-                // 60° spread (~D&D SRD cone).
-                const len = Math.hypot(dx, dy) || 1;
-                const ux = dx / len;
-                const uy = dy / len;
-                const half = len * Math.tan((Math.PI / 180) * 30);
-                const px = -uy * half;
-                const py = ux * half;
-                const ax = drafting.x + dx + px;
-                const ay = drafting.y + dy + py;
-                const bx = drafting.x + dx - px;
-                const by = drafting.y + dy - py;
-                return (
-                  <g pointerEvents="none">
-                    <polygon
-                      points={`${drafting.x},${drafting.y} ${ax},${ay} ${bx},${by}`}
-                      fill={selectedShapeColor}
-                      fillOpacity={0.25}
-                      stroke={selectedShapeColor}
-                      strokeWidth={sw}
-                      strokeDasharray={dash}
-                    />
-                  </g>
-                );
-              })()}
+              {/* Shapes + in-progress draft preview */}
+              <ShapesLayer
+                shapes={sceneShapes}
+                draggable={isGM && tool === 'select'}
+                zoom={zoom}
+                shapeDragPos={shapeDragPos}
+                screenToLogical={screenToLogical}
+                onShapeDragStart={(drag, pos) => { setShapeDrag(drag); setShapeDragPos(pos); }}
+                onRemoveShape={isGM && currentSceneId ? (id) => void removeShape(currentSceneId, id) : undefined}
+                drawTool={tool === 'circle' || tool === 'square' || tool === 'cone' ? tool : null}
+                drafting={drafting}
+                draftEnd={draftEnd}
+                draftColor={selectedShapeColor}
+              />
 
               {/* Ruler — uses the viewer's dashboard accent so each player
                   sees their own colour for measurements. */}
@@ -2290,196 +2320,50 @@ export default function MapBoard() {
               )}
 
               {/* Tokens */}
-              {visibleTokens.map((t) => {
-                const draggable = canDragToken(t) && tool === 'select';
-                const resizable = isGM && tool === 'edit';
-                const dispColor = tokenDisplayColor(t);
-                // Live-resize preview: if this token is currently being
-                // resized, render at the in-flight size so the GM sees the
-                // change as they drag.
-                const liveSize = tokenResizePos && tokenResizePos.id === t.id ? tokenResizePos.size : t.size;
-                const r = liveSize / 2;
-                const labelY = t.y + r + Math.max(10, 14 / zoom);
-                const fontSize = Math.max(8, 11 / zoom);
-                const handleR = Math.max(5, 8 / zoom);
+              <TokensLayer
+                tokens={visibleTokens}
+                isGM={isGM}
+                selectTool={tool === 'select'}
+                editTool={tool === 'edit'}
+                zoom={zoom}
+                focusTokenId={focusTokenId}
+                tokenResizePos={tokenResizePos}
+                canDragToken={canDragToken}
+                tokenColor={tokenDisplayColor}
+                screenToLogical={screenToLogical}
+                onTokenDragStart={(id, pos, offset) => {
+                  setDraggingTokenId(id);
+                  setLocalDrag({ id, x: pos.x, y: pos.y });
+                  setDragOffset(offset);
+                }}
+                onTokenResizeStart={(resize, pos) => { setTokenResize(resize); setTokenResizePos(pos); }}
+                onRemoveToken={isGM ? (id) => void removeToken(id) : undefined}
+              />
 
-                return (
-                  <g
-                    key={t.id}
-                    style={{ cursor: draggable ? 'grab' : 'default' }}
-                    onMouseDown={(e) => {
-                      if (!draggable) return;
-                      e.stopPropagation();
-                      const p = screenToLogical(e);
-                      setDraggingTokenId(t.id);
-                      setLocalDrag({ id: t.id, x: t.x, y: t.y });
-                      setDragOffset({ x: p.x - t.x, y: p.y - t.y });
-                    }}
-                    onDoubleClick={isGM ? () => void removeToken(t.id) : undefined}
-                  >
-                    {/* Deep-link focus pulse — a ritual's "Map" button centres
-                        here and flags this token; the ring pulses for a few
-                        seconds so players spot the caster. */}
-                    {focusTokenId === t.id && (
-                      <circle cx={t.x} cy={t.y} r={r + 6 / zoom} fill="none" stroke="#fbbf24" strokeWidth={4 / zoom}>
-                        <animate attributeName="r" values={`${r + 4 / zoom};${r + 16 / zoom};${r + 4 / zoom}`} dur="1.1s" repeatCount="indefinite" />
-                        <animate attributeName="opacity" values="1;0.2;1" dur="1.1s" repeatCount="indefinite" />
-                      </circle>
-                    )}
-                    {/* Outer ring in owner's color */}
-                    <circle
-                      cx={t.x} cy={t.y} r={r + 2 / zoom}
-                      fill="none"
-                      stroke={dispColor}
-                      strokeWidth={3 / zoom}
-                      strokeDasharray={t.hidden_from_players ? `${6 / zoom} ${3 / zoom}` : undefined}
-                    />
-                    {/* Token body */}
-                    <circle
-                      cx={t.x} cy={t.y} r={r}
-                      fill={dispColor + '55'}
-                      stroke={dispColor}
-                      strokeWidth={1.5 / zoom}
-                    />
-                    {/* Emoji icon — dominantBaseline="central" + dy offset centres
-                        the glyph both horizontally and vertically inside the circle */}
-                    {t.emoji && (
-                      <text
-                        x={t.x} y={t.y}
-                        textAnchor="middle"
-                        dominantBaseline="central"
-                        fontSize={r * 1.1}
-                        pointerEvents="none"
-                      >
-                        {t.emoji}
-                      </text>
-                    )}
-                    {/* Name label */}
-                    <text
-                      x={t.x} y={labelY}
-                      textAnchor="middle"
-                      fontSize={fontSize}
-                      fill="#fafaf9"
-                      stroke="#0f172a"
-                      strokeWidth={3 / zoom}
-                      paintOrder="stroke"
-                      pointerEvents="none"
-                    >
-                      {t.name}
-                    </text>
-                    {/* HP bar — sits just below the name label so the token
-                        glyph stays unobstructed and the bar reads with the
-                        identity it belongs to. */}
-                    {(t.maxHp ?? 0) > 0 && (() => {
-                      const barW = r * 1.8;
-                      const barH = Math.max(2, 4 / zoom);
-                      const barX = t.x - barW / 2;
-                      const barY = labelY + Math.max(3, 4 / zoom);
-                      const pct = Math.max(0, Math.min(1, (t.hp ?? 0) / (t.maxHp ?? 1)));
-                      const fill = pct > 0.6 ? '#10b981' : pct > 0.25 ? '#f59e0b' : '#ef4444';
-                      return (
-                        <g pointerEvents="none">
-                          <rect x={barX} y={barY} width={barW} height={barH} fill="#0f172a" opacity={0.7} rx={barH / 2} />
-                          <rect x={barX} y={barY} width={barW * pct} height={barH} fill={fill} rx={barH / 2} />
-                        </g>
-                      );
-                    })()}
-                    {/* Condition icons — arranged in an arc above the token.
-                        Each chip carries the condition name as a <title> so a
-                        hover surfaces the rule. */}
-                    {(t.conditions ?? []).length > 0 && (() => {
-                      const chips = t.conditions ?? [];
-                      const chipR = Math.max(3, r * 0.18);
-                      const spacing = chipR * 2.4;
-                      const totalW = (chips.length - 1) * spacing;
-                      const startX = t.x - totalW / 2;
-                      const arcY = t.y - r - chipR * 1.4;
-                      return (
-                        <g pointerEvents="none">
-                          {chips.map((slug, i) => {
-                            const c = CONDITIONS.find((x) => x.index === slug);
-                            const cx = startX + i * spacing;
-                            const initial = (c?.name ?? slug).charAt(0).toUpperCase();
-                            return (
-                              <g key={slug}>
-                                <circle cx={cx} cy={arcY} r={chipR} fill="#7f1d1d" stroke="#fda4af" strokeWidth={Math.max(0.5, 1 / zoom)} />
-                                <text
-                                  x={cx} y={arcY}
-                                  textAnchor="middle"
-                                  dominantBaseline="central"
-                                  fontSize={chipR * 1.2}
-                                  fill="#fef2f2"
-                                  fontWeight="600"
-                                >
-                                  {initial}
-                                </text>
-                                <title>{c?.name ?? slug}</title>
-                              </g>
-                            );
-                          })}
-                        </g>
-                      );
-                    })()}
-                    {/* Tooltip exposing current HP + conditions on hover (works even for non-editors) */}
-                    {((t.maxHp ?? 0) > 0 || (t.conditions ?? []).length > 0) && (
-                      <title>
-                        {`${t.name}`}
-                        {(t.maxHp ?? 0) > 0 ? ` — HP ${t.hp ?? 0}/${t.maxHp ?? 0}` : ''}
-                        {(t.conditions ?? []).length > 0
-                          ? ` — ${(t.conditions ?? []).map((s) => CONDITIONS.find((c) => c.index === s)?.name ?? s).join(', ')}`
-                          : ''}
-                      </title>
-                    )}
-                    {/* Edit-mode selection ring + bottom-right resize handle.
-                        Sized in screen pixels so the handle stays grabbable
-                        at any zoom. Both elements only render for GMs in the
-                        Edit tool — Select keeps tokens drag-only. */}
-                    {resizable && (
-                      <>
-                        <circle
-                          cx={t.x}
-                          cy={t.y}
-                          r={r + 4 / zoom}
-                          fill="none"
-                          stroke="#0ea5e9"
-                          strokeOpacity={0.6}
-                          strokeWidth={1 / zoom}
-                          strokeDasharray={`${4 / zoom} ${4 / zoom}`}
-                          pointerEvents="none"
-                        />
-                        <rect
-                          x={t.x + r - handleR}
-                          y={t.y + r - handleR}
-                          width={handleR * 2}
-                          height={handleR * 2}
-                          fill="#0ea5e9"
-                          stroke="#fafaf9"
-                          strokeWidth={1 / zoom}
-                          style={{ cursor: 'nwse-resize' }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            const p = screenToLogical(e);
-                            setTokenResize({
-                              id: t.id,
-                              ox: p.x - t.x - r,
-                              oy: p.y - t.y - r,
-                            });
-                            setTokenResizePos({ id: t.id, size: t.size });
-                          }}
-                        />
-                      </>
-                    )}
-                  </g>
-                );
-              })}
+              {/* Manual fog — above tokens so it covers them, below pings */}
+              {currentScene && (
+                <FogLayer
+                  fog={currentScene.fog}
+                  isGM={isGM}
+                  canvasW={canvasW}
+                  canvasH={canvasH}
+                  visionPolys={visionPolys}
+                />
+              )}
+
+              {/* Walls — GM only, above fog so they stay visible while editing */}
+              {isGM && currentScene && (
+                <WallsLayer
+                  walls={currentScene.walls}
+                  zoom={zoom}
+                  draftStart={tool === 'wall' ? drafting : null}
+                  draftEnd={tool === 'wall' ? draftEnd : null}
+                  onRemoveWall={currentSceneId ? (id) => void removeWall(currentSceneId, id) : undefined}
+                />
+              )}
 
               {/* Ping pulses */}
-              {pings.map((p) => (
-                <g key={p.id} pointerEvents="none">
-                  <circle cx={p.x} cy={p.y} r={6 / zoom} fill={p.color} className="map-ping-dot" />
-                  <circle cx={p.x} cy={p.y} r={6 / zoom} fill="none" stroke={p.color} strokeWidth={3 / zoom} className="map-ping-ring" />
-                </g>
-              ))}
+              <PingsLayer pings={pings} zoom={zoom} />
             </g>
           </svg>
         </div>

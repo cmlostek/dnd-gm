@@ -8,6 +8,7 @@ import {
   DEFAULT_DEATH_SAVES,
   DEFAULT_GOLD,
   DEFAULT_SPELL_SLOTS,
+  type Gold,
   type ActionCategory,
   type CharacterDetails,
   type CharacterFeature,
@@ -21,9 +22,12 @@ import { useQuickDice } from '../dice/quickDiceStore';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { useCatalog, searchCatalog, type CatalogEntry } from '../chat/catalog';
 import { EQUIPMENT, MAGIC_ITEMS, SPELLS, SPECIES_2024, equipmentFor, spellsFor } from '../../data/srd';
-import type { SrdEdition } from '../notes/campaignSettingsStore';
-import { useCampaignSettings } from '../notes/campaignSettingsStore';
+import type { SrdEdition, CoinRates } from '../notes/campaignSettingsStore';
+import { useCampaignSettings, COIN_KEYS, DEFAULT_COIN_RATES } from '../notes/campaignSettingsStore';
 import type { EquipmentItem, Spell } from '../../data/types';
+import IconPicker from '../../components/IconPicker';
+import { iconByKey } from '../../data/itemIcons';
+import { useSharedHomebrew } from '../homebrew/sharedHomebrewStore';
 
 // ── Skill / save definitions ──────────────────────────────────────────────
 
@@ -85,6 +89,7 @@ export default function CharacterSheet({
   // sheet opened. Subsequent edits do trigger the prompt.
   const xpEffectMounted = useRef(false);
   const edition = useCampaignSettings((s) => s.settings.srdEdition);
+  const encumbranceEnabled = useCampaignSettings((s) => s.settings.encumbrance ?? false);
 
   // Sync from server when not locally edited (matches CharCard's pattern).
   useEffect(() => {
@@ -312,6 +317,12 @@ export default function CharacterSheet({
         <Card title="Coin purse">
           <GoldBlock draft={draft} onApply={apply} />
         </Card>
+
+        {encumbranceEnabled && (
+          <Card title="Encumbrance" subtitle="Carried weight vs capacity · read-only">
+            <EncumbranceBlock draft={draft} />
+          </Card>
+        )}
 
         <Card title="Skills" subtitle="Click pip to toggle proficiency · click modifier to roll" className="lg:col-span-2">
           <SkillsBlock draft={draft} onApply={apply} />
@@ -574,6 +585,11 @@ function VitalsBlock({
   equippedWeapons: { item: InventoryItem; srd: EquipmentItem | null }[];
 }) {
   const rollFormula = useQuickDice((s) => s.rollFormula);
+  const edition = useCampaignSettings((s) => s.settings.srdEdition);
+  const inventory = draft.inventory ?? [];
+  const handsAvailable = draft.hands ?? 2;
+  const handsUsed = inventory.filter((i) => i.equipped).reduce((s, i) => s + handsForItem(i, edition), 0);
+  const overHands = handsUsed > handsAvailable;
   const hpPct = hpPercent(draft.hp, draft.maxHp);
   // SRD instant-death rule + 3 failed death saves + exhaustion 6 all kill.
   // The DeathSavesBlock auto-flags failures>=3 too; Vitals just surfaces the
@@ -702,16 +718,40 @@ function VitalsBlock({
 
       {equippedWeapons.length > 0 && (
         <div className="border-t border-slate-800 pt-2">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">In hand</div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500">In hand</div>
+            <span className={`text-[10px] ${overHands ? 'text-rose-400 font-semibold' : 'text-slate-600'}`}>
+              {handsUsed}/{handsAvailable} hands
+            </span>
+          </div>
+          {overHands && (
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-rose-300 bg-rose-950/40 border border-rose-800/60 rounded px-2 py-1">
+              <AlertTriangle size={12} className="shrink-0" />
+              Too many things in hand ({handsUsed}/{handsAvailable}). Unequip one to fix.
+            </div>
+          )}
           <div className="space-y-1">
             {equippedWeapons.map(({ item, srd }) => {
               if (!srd?.damage) return null;
               const stats = weaponStats(draft, srd);
               const damageFormula = `${stats.damageDice}${stats.abilityMod !== 0 ? ` ${fmt(stats.abilityMod)}` : ''}`;
+              const { dep, missing } = depStatus(item, inventory);
               return (
-                <div key={item.id} className="flex items-center gap-2 text-xs bg-slate-950 border border-slate-800 rounded px-2 py-1">
+                <div
+                  key={item.id}
+                  className={`flex items-center gap-2 text-xs bg-slate-950 border rounded px-2 py-1 ${overHands ? 'flash-red' : missing ? 'hl-gold' : 'border-slate-800'}`}
+                >
                   <Swords size={11} className="text-rose-400 shrink-0" />
                   <span className="text-slate-200 flex-1 truncate">{item.name}</span>
+                  {missing && (
+                    <span
+                      className="flex items-center gap-0.5 text-[10px] text-amber-400 shrink-0"
+                      title={dep ? `${dep.name} is out (quantity 0)` : 'Required item is no longer in the inventory'}
+                    >
+                      <AlertTriangle size={10} />
+                      {dep ? 'out' : 'missing'}
+                    </span>
+                  )}
                   <button
                     onClick={() => rollFormula(`1d20 ${fmt(stats.attackBonus)}`, `${item.name} attack`)}
                     className="px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-300 font-mono"
@@ -1185,6 +1225,24 @@ const COIN_LABELS: { key: keyof import('../party/partyStore').Gold; label: strin
   { key: 'cp', label: 'CP', color: '#fb923c' },
 ];
 
+/** Re-express a purse into the fewest coins that preserve its total value,
+ *  using the campaign's (possibly house-ruled) per-coin copper values. Coins
+ *  are filled high→low; any sub-unit remainder lands in the lowest-value coin
+ *  (a no-op in the standard config where cp = 1cp). */
+function consolidateGold(gold: Gold, rates: CoinRates): Gold {
+  const totalCp = COIN_KEYS.reduce((sum, k) => sum + (gold[k] || 0) * (rates[k] || 0), 0);
+  const out: Gold = { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 };
+  const ordered = COIN_KEYS.filter((k) => (rates[k] || 0) > 0).sort((a, b) => rates[b] - rates[a]);
+  let remaining = totalCp;
+  for (const k of ordered) {
+    const n = Math.floor(remaining / rates[k]);
+    out[k] = n;
+    remaining -= n * rates[k];
+  }
+  if (remaining > 0 && ordered.length) out[ordered[ordered.length - 1]] += remaining;
+  return out;
+}
+
 function GoldBlock({
   draft,
   onApply,
@@ -1193,20 +1251,91 @@ function GoldBlock({
   onApply: (p: Partial<PartyMember>) => void;
 }) {
   const gold = draft.gold ?? DEFAULT_GOLD;
+  const rates = useCampaignSettings((s) => s.settings.coinRates ?? DEFAULT_COIN_RATES);
+  const totalCp = COIN_KEYS.reduce((sum, k) => sum + (gold[k] || 0) * (rates[k] || 0), 0);
+  const totalGp = (rates.gp ?? 0) > 0 ? totalCp / rates.gp : 0;
+  const consolidated = consolidateGold(gold, rates);
+  const canConsolidate = COIN_KEYS.some((k) => consolidated[k] !== gold[k]);
   return (
-    <div className="grid grid-cols-5 gap-2">
-      {COIN_LABELS.map(({ key, label, color }) => (
-        <div key={key} className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
-          <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color }}>
-            {label}
+    <div className="space-y-2">
+      <div className="grid grid-cols-5 gap-2">
+        {COIN_LABELS.map(({ key, label, color }) => (
+          <div key={key} className="bg-slate-950 border border-slate-800 rounded p-2 text-center">
+            <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color }}>
+              {label}
+            </div>
+            <NumInput
+              value={gold[key]}
+              onChange={(v) => onApply({ gold: { ...gold, [key]: v } })}
+              className="w-full text-center !border-transparent !bg-transparent !p-0 text-sm"
+            />
           </div>
-          <NumInput
-            value={gold[key]}
-            onChange={(v) => onApply({ gold: { ...gold, [key]: v } })}
-            className="w-full text-center !border-transparent !bg-transparent !p-0 text-sm"
-          />
+        ))}
+      </div>
+      <div className="flex items-center justify-between text-[11px] text-slate-500">
+        <span>
+          Total ≈ <span className="text-amber-300 font-mono">{totalGp.toFixed(2)}</span> gp
+        </span>
+        <button
+          onClick={() => onApply({ gold: consolidated })}
+          disabled={!canConsolidate}
+          title="Convert coins into the fewest denominations at the campaign's rates"
+          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:hover:bg-slate-800"
+        >
+          Consolidate
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Encumbrance ─────────────────────────────────────────────────────────
+
+/** Total carried weight from resolvable SRD item weights × quantity. Custom
+ *  items and spells carry no weight data and count as 0. */
+function carriedWeight(inventory: InventoryItem[], edition: SrdEdition): number {
+  return inventory.reduce((sum, it) => {
+    const w = srdItemFor(it, edition)?.weight ?? 0;
+    return sum + w * (it.qty || 0);
+  }, 0);
+}
+
+/** Read-only carry-weight panel. Only rendered when the campaign has
+ *  encumbrance enabled (otherwise capacity is unlimited and there's nothing to
+ *  track). Capacity is the 5e STR × 15 lb carrying capacity. */
+function EncumbranceBlock({ draft }: { draft: PartyMember }) {
+  const edition = useCampaignSettings((s) => s.settings.srdEdition);
+  const weight = carriedWeight(draft.inventory ?? [], edition);
+  const capacity = (draft.str ?? 10) * 15;
+  const over = weight > capacity;
+  const pct = capacity > 0 ? Math.min(100, (weight / capacity) * 100) : 0;
+  const fmtW = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+  return (
+    <div className="space-y-2">
+      <div className="flex items-end justify-between">
+        <div>
+          <div className="text-2xl font-mono text-slate-100">
+            {fmtW(weight)}<span className="text-sm text-slate-500"> lb</span>
+          </div>
+          <div className="text-[11px] text-slate-500">Carried</div>
         </div>
-      ))}
+        <div className="text-right">
+          <div className={`text-lg font-mono ${over ? 'text-rose-400' : 'text-slate-300'}`}>/ {capacity} lb</div>
+          <div className="text-[11px] text-slate-500">Capacity · STR × 15</div>
+        </div>
+      </div>
+      <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full transition-all ${over ? 'bg-rose-600' : pct > 75 ? 'bg-amber-500' : 'bg-emerald-600'}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {over && (
+        <div className="text-[11px] text-rose-400 flex items-center gap-1">
+          <AlertTriangle size={11} /> Over capacity — encumbered.
+        </div>
+      )}
+      <div className="text-[10px] text-slate-600">Computed from item weights; not editable.</div>
     </div>
   );
 }
@@ -1384,6 +1513,28 @@ function srdItemFor(item: InventoryItem, edition: SrdEdition): EquipmentItem | n
   }
   return null;
 }
+
+/** How many hands wielding this item occupies: a two-handed weapon takes 2, a
+ *  shield or any other weapon takes 1, and everything else (armor, gear,
+ *  spells, or items we can't resolve to an SRD weapon) takes 0. Drives the
+ *  inventory over-equip guard. */
+function handsForItem(item: InventoryItem, edition: SrdEdition): number {
+  const srd = srdItemFor(item, edition);
+  if (!srd) return 0;
+  if (srd.armor_category === 'Shield') return 1;
+  const isWeapon = !!srd.weapon_category || !!srd.damage;
+  if (!isWeapon) return 0;
+  const props = (srd.properties ?? []).map((p) => p.name.toLowerCase());
+  return props.includes('two-handed') ? 2 : 1;
+}
+
+/** Resolve an item's declared dependency against the current inventory and flag
+ *  when it's gone (removed) or out (quantity 0). */
+function depStatus(item: InventoryItem, inventory: InventoryItem[]): { dep?: InventoryItem; missing: boolean } {
+  const dep = item.dependsOn ? inventory.find((i) => i.id === item.dependsOn) : undefined;
+  const missing = !!item.dependsOn && (!dep || dep.qty <= 0);
+  return { dep, missing };
+}
 function srdSpellFor(item: InventoryItem, edition: SrdEdition): Spell | null {
   if (item.sourceKind === 'srd-spell' && item.sourceId) {
     return getSpellsIdx(edition)[item.sourceId] ?? null;
@@ -1428,6 +1579,13 @@ function InventoryBlock({
 }) {
   const inventory = draft.inventory ?? [];
   const rollFormula = useQuickDice((s) => s.rollFormula);
+  const edition = useCampaignSettings((s) => s.settings.srdEdition);
+
+  const handsAvailable = draft.hands ?? 2;
+  const handsUsed = inventory
+    .filter((i) => i.equipped)
+    .reduce((s, i) => s + handsForItem(i, edition), 0);
+  const overHands = handsUsed > handsAvailable;
 
   const add = (entry: { sourceKind: InventoryItem['sourceKind']; sourceId?: string; name: string }) => {
     const next: InventoryItem = {
@@ -1455,6 +1613,28 @@ function InventoryBlock({
     <div className="space-y-2">
       <InventoryPicker onAdd={add} />
 
+      <div className={`flex items-center justify-between text-[11px] ${overHands ? 'text-rose-300' : 'text-slate-500'}`}>
+        <label className="flex items-center gap-1.5" title="Weapons/shields you can wield at once">
+          <span>Hands</span>
+          <input
+            type="number"
+            min={0}
+            value={handsAvailable}
+            onChange={(e) => onApply({ hands: Math.max(0, parseInt(e.target.value || '0', 10) || 0) })}
+            className="w-11 bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-center font-mono text-slate-200"
+          />
+        </label>
+        <span className={overHands ? 'text-rose-400 font-semibold' : ''}>
+          {handsUsed}/{handsAvailable} in use
+        </span>
+      </div>
+      {overHands && (
+        <div className="flex items-center gap-1.5 text-[11px] text-rose-300 bg-rose-950/40 border border-rose-800/60 rounded px-2 py-1">
+          <AlertTriangle size={12} className="shrink-0" />
+          Too many weapons/shields equipped for {handsAvailable} hand{handsAvailable === 1 ? '' : 's'} ({handsUsed} in use). Unequip a highlighted item or raise the hand count.
+        </div>
+      )}
+
       {inventory.length === 0 ? (
         <div className="text-sm text-slate-500 italic py-2">
           No items yet. Use the search above to add weapons, gear, magic items, or known spells.
@@ -1469,6 +1649,7 @@ function InventoryBlock({
               <InventoryRow
                 item={item}
                 member={draft}
+                flash={overHands && item.equipped && handsForItem(item, edition) > 0}
                 onChange={(patch) => update(item.id, patch)}
                 onRemove={() => remove(item.id)}
                 onRollAttack={(label, bonus) => rollFormula(`1d20 ${fmt(bonus)}`, label)}
@@ -1485,6 +1666,7 @@ function InventoryBlock({
 function InventoryRow({
   item,
   member,
+  flash,
   onChange,
   onRemove,
   onRollAttack,
@@ -1492,6 +1674,7 @@ function InventoryRow({
 }: {
   item: InventoryItem;
   member: PartyMember;
+  flash?: boolean;
   onChange: (patch: Partial<InventoryItem>) => void;
   onRemove: () => void;
   onRollAttack: (label: string, bonus: number) => void;
@@ -1520,16 +1703,58 @@ function InventoryRow({
   if (isWeapon) { KindIcon = Swords; kindColor = '#f87171'; }
   else if (isArmor) { KindIcon = ShieldIcon; kindColor = '#60a5fa'; }
   else if (isSpell) { KindIcon = Sparkles; kindColor = '#c4b5fd'; }
+  else if (srdMagic) { KindIcon = Sparkles; kindColor = '#c4b5fd'; }
+
+  // Icon resolution: an explicit per-row override wins; otherwise fall back to
+  // the icon the homebrew item was authored with, then the kind-derived icon.
+  const homebrewIconKey = useSharedHomebrew((s) => {
+    if (item.sourceKind !== 'item' || !item.sourceId) return undefined;
+    const row = s.items.find((r) => r.id === item.sourceId);
+    return (row?.data as Record<string, unknown> | undefined)?.icon as string | undefined;
+  });
+  const HomebrewIcon = iconByKey(homebrewIconKey);
+  const FallbackIcon = HomebrewIcon ?? KindIcon;
+  const fallbackColor = HomebrewIcon ? '#94a3b8' : kindColor;
+
+  // A short type label so non-weapon / non-spell rows still say what they are.
+  const typeLabel = srdMagic
+    ? `${srdMagic.equipment_category.name} · ${srdMagic.rarity.name}`
+    : isArmor && srdItem
+    ? `${srdItem.armor_category ?? 'Armor'}${srdItem.armor_category === 'Shield' ? '' : ' armor'}`
+    : srdItem
+    ? srdItem.equipment_category.name
+    : item.sourceKind === 'item'
+    ? 'Homebrew item'
+    : '';
 
   const stats = isWeapon && srdItem ? weaponStats(member, srdItem) : null;
   const damageFormula = stats?.damageDice
     ? `${stats.damageDice}${stats.abilityMod !== 0 ? ` ${fmt(stats.abilityMod)}` : ''}`
     : '';
 
+  // Item dependency (e.g. a bow needs arrows): resolve the linked item and flag
+  // when it's gone from the inventory or down to 0.
+  const otherItems = (member.inventory ?? []).filter((i) => i.id !== item.id);
+  const { dep, missing: depMissing } = depStatus(item, member.inventory ?? []);
+
   return (
-    <div className="bg-slate-950 border border-slate-800 rounded">
+    <div className={`bg-slate-950 border rounded ${flash ? 'flash-red' : depMissing ? 'hl-gold' : 'border-slate-800'}`}>
     <div className="flex items-center gap-2 px-2 py-1.5">
-      <KindIcon size={14} style={{ color: kindColor }} className="shrink-0" />
+      <div className="print:hidden">
+        <IconPicker
+          value={item.icon}
+          onChange={(key) => onChange({ icon: key })}
+          fallback={FallbackIcon}
+          fallbackColor={fallbackColor}
+          size={14}
+          title="Item icon"
+        />
+      </div>
+      {(() => {
+        // Print gets a plain resolved icon, no picker chrome.
+        const PrintIcon = iconByKey(item.icon) ?? FallbackIcon;
+        return <PrintIcon size={14} style={{ color: fallbackColor }} className="shrink-0 hidden print:block" />;
+      })()}
 
       <div className="min-w-0 flex-1">
         <button
@@ -1575,9 +1800,39 @@ function InventoryRow({
             {srdSpell.level === 0 ? 'Cantrip' : `Lv ${srdSpell.level}`} · {srdSpell.school.name}
           </div>
         )}
+        {!stats && !srdSpell && typeLabel && (
+          <div className="text-[11px] text-slate-500">{typeLabel}</div>
+        )}
+        {/* Dependency picker — shown once a link is set or the row is expanded,
+            so rows without dependencies stay uncluttered. */}
+        {(showDesc || item.dependsOn) && otherItems.length > 0 && (
+          <div className="flex items-center gap-1 text-[10px] mt-0.5 text-slate-600 print:hidden">
+            <LinkIcon size={9} className="shrink-0" />
+            <select
+              value={item.dependsOn ?? ''}
+              onChange={(e) => onChange({ dependsOn: e.target.value || undefined })}
+              className="bg-transparent text-slate-500 outline-none max-w-[10rem] truncate hover:text-slate-300"
+              title="Require another item (e.g. ammunition)"
+            >
+              <option value="">no dependency</option>
+              {otherItems.map((o) => (
+                <option key={o.id} value={o.id}>needs {o.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-1 shrink-0">
+        {depMissing && (
+          <span
+            className="flex items-center gap-0.5 text-[10px] text-amber-400"
+            title={dep ? `${dep.name} is out (quantity 0)` : 'Required item is no longer in the inventory'}
+          >
+            <AlertTriangle size={11} />
+            {dep ? 'out' : 'missing'}
+          </span>
+        )}
         <input
           type="number"
           value={item.qty}
@@ -1679,7 +1934,9 @@ function InventoryRow({
           </div>
         )}
         <div className="srd-popover-body markdown-body" style={{ overflowY: 'visible' }}>
-          {srdSpell?.desc?.map((p, i) => <p key={`s${i}`}>{p}</p>)}
+          {srdSpell?.desc && (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{srdSpell.desc.join('\n\n')}</ReactMarkdown>
+          )}
           {srdMagic?.desc?.map((p, i) => (
             <ReactMarkdown key={`m${i}`} remarkPlugins={[remarkGfm]}>{p}</ReactMarkdown>
           ))}
@@ -2166,15 +2423,15 @@ function SpellRow({
             <span>Components: {srd.components.join(', ')}</span>
             <span>Duration: {srd.duration}</span>
           </div>
-          {srd.desc.map((line, i) => (
-            <p key={i} className="whitespace-pre-wrap leading-snug">{line}</p>
-          ))}
+          <div className="markdown-body text-[12px]">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{srd.desc.join('\n\n')}</ReactMarkdown>
+          </div>
           {srd.higher_level && srd.higher_level.length > 0 && (
             <div className="mt-1">
               <div className="text-[10px] uppercase tracking-wider text-slate-500">At higher levels</div>
-              {srd.higher_level.map((line, i) => (
-                <p key={i} className="whitespace-pre-wrap leading-snug">{line}</p>
-              ))}
+              <div className="markdown-body text-[12px]">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{srd.higher_level.join('\n\n')}</ReactMarkdown>
+              </div>
             </div>
           )}
         </div>

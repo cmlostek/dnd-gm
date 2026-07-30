@@ -35,6 +35,18 @@ export type SrdEdition = '2014' | '2024' | 'both';
  */
 export type HpRollingMethod = 'avg' | 'roll' | 'manual';
 
+/** Coin denominations, ordered high → low value. */
+export const COIN_KEYS = ['pp', 'gp', 'ep', 'sp', 'cp'] as const;
+export type CoinKey = (typeof COIN_KEYS)[number];
+/** Each coin's value expressed in the common base unit (copper). Drives the
+ *  character-sheet currency converter. The GM can override for house economies
+ *  (e.g. dropping electrum, or a silver standard). */
+export type CoinRates = Record<CoinKey, number>;
+
+/** Standard 5e values in copper: 1 sp = 10cp, 1 ep = 50cp, 1 gp = 100cp,
+ *  1 pp = 1000cp. */
+export const DEFAULT_COIN_RATES: CoinRates = { pp: 1000, gp: 100, ep: 50, sp: 10, cp: 1 };
+
 export type CampaignSettings = {
   /** Nav path slugs hidden from non-GM players (e.g. 'spells', 'rules'). */
   hiddenPages: string[];
@@ -49,6 +61,15 @@ export type CampaignSettings = {
   /** Default HP-on-level-up method for this campaign. The level-up modal
    *  starts here but lets the player override per-level. */
   hpRollingMethod: HpRollingMethod;
+  /** Per-coin value (in copper) used by the currency converter. GM-set. */
+  coinRates: CoinRates;
+  /** When on, the character sheet tracks carried weight against a STR-based
+   *  carrying capacity. Off = unlimited (no encumbrance). */
+  encumbrance: boolean;
+  /** Which edition's encounter-difficulty maths to use. 'auto' follows
+   *  srdEdition (falling back to 2014 when that's set to 'both'); the explicit
+   *  values let a table run, say, 2024 content on 2014 encounter budgets. */
+  encounterEdition: 'auto' | '2014' | '2024';
 };
 
 export const DEFAULTS: CampaignSettings = {
@@ -58,7 +79,19 @@ export const DEFAULTS: CampaignSettings = {
   folderColors: {},
   srdEdition: 'both',
   hpRollingMethod: 'avg',
+  coinRates: { ...DEFAULT_COIN_RATES },
+  encumbrance: false,
+  encounterEdition: 'auto',
 };
+
+/** Resolve the effective encounter-maths edition from campaign settings. */
+export function resolveEncounterEdition(s: Pick<CampaignSettings, 'encounterEdition' | 'srdEdition'>): '2014' | '2024' {
+  const pref = s.encounterEdition ?? 'auto';
+  if (pref === '2014' || pref === '2024') return pref;
+  // 'both' has no single answer; 2014 is the conservative default because its
+  // multiplier rates group fights as harder.
+  return s.srdEdition === '2024' ? '2024' : '2014';
+}
 
 const lsKey = (cid: string) => `dnd-gm:campaignSettings:${cid}`;
 
@@ -101,6 +134,10 @@ type SettingsState = {
   setFolderColor: (folderId: string, color: string | null) => void;
   setSrdEdition: (edition: SrdEdition) => void;
   setHpRollingMethod: (method: HpRollingMethod) => void;
+  setCoinRate: (coin: CoinKey, value: number) => void;
+  resetCoinRates: () => void;
+  setEncumbrance: (on: boolean) => void;
+  setEncounterEdition: (e: 'auto' | '2014' | '2024') => void;
 };
 
 export const useCampaignSettings = create<SettingsState>((set, get) => ({
@@ -245,6 +282,47 @@ export const useCampaignSettings = create<SettingsState>((set, get) => ({
   setHpRollingMethod: (method) => {
     const { settings, campaignId } = get();
     const next = { ...settings, hpRollingMethod: method };
+    set({ settings: next });
+    if (campaignId) {
+      lsSave(campaignId, next);
+      sbUpsert(campaignId, next);
+    }
+  },
+
+  setCoinRate: (coin, value) => {
+    const { settings, campaignId } = get();
+    const rates = { ...(settings.coinRates ?? DEFAULT_COIN_RATES), [coin]: Math.max(0, Math.round(value) || 0) };
+    const next = { ...settings, coinRates: rates };
+    set({ settings: next });
+    if (campaignId) {
+      lsSave(campaignId, next);
+      sbUpsert(campaignId, next);
+    }
+  },
+
+  resetCoinRates: () => {
+    const { settings, campaignId } = get();
+    const next = { ...settings, coinRates: { ...DEFAULT_COIN_RATES } };
+    set({ settings: next });
+    if (campaignId) {
+      lsSave(campaignId, next);
+      sbUpsert(campaignId, next);
+    }
+  },
+
+  setEncumbrance: (on) => {
+    const { settings, campaignId } = get();
+    const next = { ...settings, encumbrance: on };
+    set({ settings: next });
+    if (campaignId) {
+      lsSave(campaignId, next);
+      sbUpsert(campaignId, next);
+    }
+  },
+
+  setEncounterEdition: (e) => {
+    const { settings, campaignId } = get();
+    const next = { ...settings, encounterEdition: e };
     set({ settings: next });
     if (campaignId) {
       lsSave(campaignId, next);

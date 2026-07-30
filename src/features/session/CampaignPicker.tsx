@@ -644,10 +644,12 @@ function CreateForm({ onBack }: { onBack: () => void }) {
   const [displayName, setDisplayName] = useState(rememberedDisplayName());
   // Default HP-on-level-up method — can be changed later in Settings.
   const [hpMethod, setHpMethod] = useState<'avg' | 'roll' | 'manual'>('avg');
+  // Encumbrance is off by default (most tables hand-wave carry weight).
+  const [encumbrance, setEncumbrance] = useState(false);
 
   const submit = () => {
     if (!name.trim() || !displayName.trim()) return;
-    create(name.trim(), displayName.trim(), { hpRollingMethod: hpMethod });
+    create(name.trim(), displayName.trim(), { hpRollingMethod: hpMethod, encumbrance });
   };
 
   return (
@@ -695,6 +697,18 @@ function CreateForm({ onBack }: { onBack: () => void }) {
           {hpMethod === 'manual' && 'Each player enters whatever the table agreed on.'}
         </div>
       </div>
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={encumbrance}
+          onChange={(e) => setEncumbrance(e.target.checked)}
+          className="accent-sky-500"
+        />
+        <span className="text-xs text-slate-300">
+          Track encumbrance
+          <span className="block text-[10px] text-slate-600">Character sheets show carried weight vs a STR-based capacity. Off = unlimited.</span>
+        </span>
+      </label>
       <div className="flex gap-2 pt-1">
         <button onClick={onBack} className="flex-1 px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">
           Back

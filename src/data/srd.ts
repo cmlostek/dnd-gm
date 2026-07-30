@@ -156,6 +156,78 @@ export function formatCost(cost?: { quantity: number; unit: string }): string {
   return `${cost.quantity} ${cost.unit}`;
 }
 
+/**
+ * Returns readable description paragraphs for a piece of equipment. When the
+ * SRD ships prose (`desc[]`), that wins. Otherwise — true for ~130 basic gear
+ * entries per edition (weapons, armor, packs, provisions) — we synthesise a
+ * sentence or two from the item's stats so every item reads as described
+ * instead of blank. The `edition` note is appended when known.
+ */
+export function describeEquipment(item: EquipmentItem): string[] {
+  if (item.desc && item.desc.length > 0 && item.desc.join('').trim() !== '') {
+    return item.desc;
+  }
+
+  const cat = item.equipment_category?.name ?? 'Adventuring gear';
+  const sentences: string[] = [];
+
+  if (item.damage || item.weapon_category) {
+    // Weapon: lead with proficiency class + reach, then the damage line.
+    const kind = [item.weapon_category, item.weapon_range]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    let lead = `A ${kind ? kind.toLowerCase() : 'martial'} weapon.`;
+    if (item.damage) {
+      lead += ` On a hit it deals ${item.damage.damage_dice} ${item.damage.damage_type.name.toLowerCase()} damage`;
+      if (item.two_handed_damage) {
+        lead += `, or ${item.two_handed_damage.damage_dice} ${item.two_handed_damage.damage_type.name.toLowerCase()} when wielded with two hands (versatile)`;
+      }
+      lead += '.';
+    }
+    sentences.push(lead);
+    if (item.range && (item.range.normal || item.range.long)) {
+      sentences.push(
+        `It has a range of ${item.range.normal ?? '—'}${item.range.long ? `/${item.range.long}` : ''} feet.`
+      );
+    }
+    const props = (item.properties ?? []).map((p) => p.name);
+    if (props.length > 0) {
+      sentences.push(`Weapon properties: ${props.join(', ')}.`);
+    }
+  } else if (item.armor_class) {
+    // Armor: describe the AC formula and any drawbacks.
+    const ac = item.armor_class;
+    let lead = `${item.armor_category ? `${item.armor_category} armor.` : 'Armor.'} It sets your base Armor Class to ${ac.base}`;
+    if (ac.dex_bonus) {
+      lead += ac.max_bonus ? ` plus your Dexterity modifier (maximum +${ac.max_bonus})` : ' plus your Dexterity modifier';
+    }
+    lead += '.';
+    sentences.push(lead);
+    if (item.str_minimum && item.str_minimum > 0) {
+      sentences.push(`Requires Strength ${item.str_minimum}; wearing it with a lower score reduces your speed by 10 feet.`);
+    }
+    if (item.stealth_disadvantage) {
+      sentences.push('You have disadvantage on Dexterity (Stealth) checks while wearing it.');
+    }
+  } else {
+    // Generic gear / tools / provisions.
+    sentences.push(`${cat}.`);
+  }
+
+  // Always close with the practical stats so the synthesised text carries the
+  // same reference value as a real description.
+  const tail: string[] = [];
+  if (item.weight !== undefined) tail.push(`weighs ${item.weight} lb`);
+  if (item.cost) tail.push(`costs ${formatCost(item.cost)}`);
+  if (tail.length > 0) {
+    const s = tail.join(' and ');
+    sentences.push(`It ${s}.`);
+  }
+
+  return sentences;
+}
+
 export function modifier(score: number): string {
   const m = Math.floor((score - 10) / 2);
   return m >= 0 ? `+${m}` : `${m}`;

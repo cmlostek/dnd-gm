@@ -551,13 +551,33 @@ export default function LevelUpModal({
                 )}
 
                 {hpMethod === 'roll' && (
-                  <div className="flex items-center gap-3 text-sm">
+                  <div className="flex items-center gap-3 text-sm flex-wrap">
                     <button
                       onClick={rollHitDie}
                       className="px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-600 text-white text-xs flex items-center gap-1"
                     >
                       <Dices size={13} /> Roll 1d{cls.hitDie}
                     </button>
+                    {/* Manual entry — for tables that roll physical dice and just
+                        want to record the result. */}
+                    <label className="flex items-center gap-1.5 text-xs text-slate-400">
+                      or enter roll
+                      <input
+                        type="number"
+                        min={1}
+                        max={cls.hitDie}
+                        value={rolledHp ?? ''}
+                        onChange={(e) =>
+                          setRolledHp(
+                            e.target.value === ''
+                              ? null
+                              : Math.max(1, Math.min(cls.hitDie, parseInt(e.target.value, 10) || 1)),
+                          )
+                        }
+                        placeholder={`1–${cls.hitDie}`}
+                        className="w-16 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-center text-slate-100 font-mono focus:outline-none focus:border-sky-700"
+                      />
+                    </label>
                     {rolledHp !== null && (
                       <div className="text-slate-300">
                         Rolled <span className="font-mono text-slate-100">{rolledHp}</span> + Con mod{' '}

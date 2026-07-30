@@ -38,9 +38,13 @@ import {
 } from '../session/roleColorsStore';
 import PageHeader from '../../components/PageHeader';
 import { useSession } from '../session/sessionStore';
-import { useCampaignSettings } from '../notes/campaignSettingsStore';
+import { useCampaignSettings, COIN_KEYS, DEFAULT_COIN_RATES } from '../notes/campaignSettingsStore';
 import { useTheme, THEMES } from '../session/themeStore';
 import { useSidebar } from '../session/sidebarStore';
+import { useDashboardPref, DASHBOARD_TAB_LABELS, type DashboardDefaultTab } from '../dashboard/dashboardPrefStore';
+import { useDiceEffects } from '../dice/diceEffectsStore';
+import { useNotifications } from '../notifications/notificationStore';
+import { CampaignManagementPanel, LeaveCampaignRow } from '../dashboard/Dashboard';
 import { useNavCustomization } from '../../hooks/useNavCustomization';
 import { supabase } from '../../lib/supabase';
 
@@ -56,6 +60,7 @@ const NAV: NavItem[] = [
   { to: '/map', label: 'Map', icon: MapIcon },
   { to: '/spells', label: 'Spells', icon: Sparkles },
   { to: '/items', label: 'Items', icon: Package },
+  { to: '/encounters', label: 'Encounters', icon: Swords, gmOnly: true },
   { to: '/statblocks', label: 'Stat Blocks', icon: ScrollText, gmOnly: true },
   { to: '/homebrew', label: 'Homebrew', icon: FlaskConical, gmOnly: true },
   { to: '/record', label: 'Record', icon: Mic, gmOnly: true },
@@ -71,6 +76,7 @@ export default function Settings() {
   const email = useSession((s) => s.email);
   const campaignId = useSession((s) => s.campaignId);
   const campaignName = useSession((s) => s.campaignName);
+  const userId = useSession((s) => s.userId);
   const [exporting, setExporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
@@ -108,8 +114,15 @@ export default function Settings() {
   };
 
   const { mode, toggle: toggleMode } = useTheme();
-  const hoverExpand = useSidebar((s) => s.hoverExpand);
-  const setHoverExpand = useSidebar((s) => s.setHoverExpand);
+  const sidebarMode = useSidebar((s) => s.mode);
+  const setSidebarMode = useSidebar((s) => s.setMode);
+  const dashboardDefaultTab = useDashboardPref((s) => s.defaultTab);
+  const setDashboardDefaultTab = useDashboardPref((s) => s.setDefaultTab);
+  const diceVisual = useDiceEffects((s) => s.visual);
+  const setDiceVisual = useDiceEffects((s) => s.setVisual);
+  const diceSound = useDiceEffects((s) => s.sound);
+  const setDiceSound = useDiceEffects((s) => s.setSound);
+  const notif = useNotifications();
 
   const togglePage = useCampaignSettings((s) => s.togglePage);
   const toggleGmPage = useCampaignSettings((s) => s.toggleGmPage);
@@ -119,6 +132,14 @@ export default function Settings() {
   const allowedGmPages = useCampaignSettings((s) => s.settings.allowedGmPages ?? []);
   const hpRollingMethod = useCampaignSettings((s) => s.settings.hpRollingMethod);
   const setHpRollingMethod = useCampaignSettings((s) => s.setHpRollingMethod);
+  const coinRates = useCampaignSettings((s) => s.settings.coinRates ?? DEFAULT_COIN_RATES);
+  const setCoinRate = useCampaignSettings((s) => s.setCoinRate);
+  const resetCoinRates = useCampaignSettings((s) => s.resetCoinRates);
+  const encumbrance = useCampaignSettings((s) => s.settings.encumbrance ?? false);
+  const setEncumbrance = useCampaignSettings((s) => s.setEncumbrance);
+  const encounterEdition = useCampaignSettings((s) => s.settings.encounterEdition ?? 'auto');
+  const setEncounterEdition = useCampaignSettings((s) => s.setEncounterEdition);
+  const srdEditionSetting = useCampaignSettings((s) => s.settings.srdEdition);
 
   const trueIsGM = role === 'gm' || role === 'cogm';
   const isGM = trueIsGM && !viewAsPlayer;
@@ -145,15 +166,78 @@ export default function Settings() {
           />
           <ThemeColorRow />
           <SwitchRow
-            label="Auto-expand sidebar"
+            label="Auto-collapse sidebar"
             hint={
-              hoverExpand
-                ? 'Sidebar grows to full width when you hover or focus it.'
-                : 'Sidebar stays as a narrow icon rail; hover over icons for labels.'
+              sidebarMode === 'auto'
+                ? 'Sidebar sits as a narrow icon rail and expands on hover, collapsing when you move away.'
+                : 'Sidebar stays where you put it; use the collapse button in its header to toggle.'
             }
-            checked={hoverExpand}
-            onChange={setHoverExpand}
+            checked={sidebarMode === 'auto'}
+            onChange={(v) => setSidebarMode(v ? 'auto' : 'manual')}
           />
+          <SelectRow<DashboardDefaultTab>
+            label="Default dashboard page"
+            hint="Which tab the Dashboard opens on."
+            value={dashboardDefaultTab}
+            options={(Object.keys(DASHBOARD_TAB_LABELS) as DashboardDefaultTab[]).map((v) => ({
+              value: v,
+              label: DASHBOARD_TAB_LABELS[v],
+            }))}
+            onChange={setDashboardDefaultTab}
+          />
+          <SwitchRow
+            label="Show dice rolls on screen"
+            hint="Flashes the result in the centre of the screen whenever anything is rolled."
+            checked={diceVisual}
+            onChange={setDiceVisual}
+          />
+          <SwitchRow
+            label="Dice roll sound"
+            hint="A short clatter on each roll. Turn off if the table shares one speaker."
+            checked={diceSound}
+            onChange={setDiceSound}
+          />
+        </Section>
+
+        <Section title="Notifications">
+          {!notif.supported ? (
+            <div className="px-4 py-3 text-[12px] text-slate-500">
+              This browser doesn't support notifications.
+            </div>
+          ) : (
+            <>
+              <SwitchRow
+                label="Desktop notifications"
+                hint={
+                  notif.permission === 'denied'
+                    ? 'Blocked for this site — re-allow it in your browser’s site settings first.'
+                    : 'Alerts you when the Grimoire tab is in the background. Nothing is shown while you’re looking at the page.'
+                }
+                checked={notif.enabled && notif.permission === 'granted'}
+                onChange={async (v) => {
+                  if (!v) { notif.setEnabled(false); return; }
+                  // Only prompt when switching on, so the browser dialog always
+                  // follows a deliberate action.
+                  const p = notif.permission === 'granted' ? 'granted' : await notif.request();
+                  notif.setEnabled(p === 'granted');
+                }}
+              />
+              {notif.enabled && notif.permission === 'granted' && (
+                <>
+                  <SwitchRow
+                    label="When someone @mentions me"
+                    checked={notif.onMention}
+                    onChange={notif.setOnMention}
+                  />
+                  <SwitchRow
+                    label="When someone whispers me"
+                    checked={notif.onWhisper}
+                    onChange={notif.setOnWhisper}
+                  />
+                </>
+              )}
+            </>
+          )}
           <RoleColorRows />
         </Section>
 
@@ -189,6 +273,16 @@ export default function Settings() {
 
         {isGM && (
           <Section title="House rules">
+            <SwitchRow
+              label="Track encumbrance"
+              hint={
+                encumbrance
+                  ? 'Character sheets show carried weight against a STR-based capacity.'
+                  : 'Carry weight is unlimited; the encumbrance panel shows ∞.'
+              }
+              checked={encumbrance}
+              onChange={setEncumbrance}
+            />
             <div className="px-4 py-3 border-b border-slate-800 last:border-b-0">
               <div className="text-sm text-slate-200">HP on level-up</div>
               <div className="text-[11px] text-slate-500 font-normal mb-2">
@@ -207,6 +301,57 @@ export default function Settings() {
                   >
                     {m === 'avg' ? 'Take average' : m === 'roll' ? 'Roll the die' : 'Manual entry'}
                   </button>
+                ))}
+              </div>
+            </div>
+            <div className="px-4 py-3 border-b border-slate-800 last:border-b-0">
+              <div className="text-sm text-slate-200">Encounter difficulty maths</div>
+              <div className="text-[11px] text-slate-500 font-normal mb-2">
+                2014 multiplies XP by creature count (group fights rate harder); 2024 uses a
+                flat budget. Auto follows the SRD edition above
+                {srdEditionSetting === 'both' && ' — which is set to Both, so Auto uses 2014'}.
+              </div>
+              <div className="flex rounded overflow-hidden border border-slate-700 w-fit">
+                {(['auto', '2014', '2024'] as const).map((e) => (
+                  <button
+                    key={e}
+                    onClick={() => setEncounterEdition(e)}
+                    className={`px-3 py-1 text-xs ${
+                      encounterEdition === e
+                        ? 'bg-sky-900/40 text-sky-200'
+                        : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
+                    }`}
+                  >
+                    {e === 'auto' ? 'Auto' : e}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="px-4 py-3 border-b border-slate-800 last:border-b-0">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-slate-200">Currency conversion rates</div>
+                <button
+                  onClick={resetCoinRates}
+                  className="text-[11px] text-slate-400 hover:text-slate-200 underline"
+                >
+                  Reset to 5e
+                </button>
+              </div>
+              <div className="text-[11px] text-slate-500 font-normal mb-2">
+                Each coin's value in copper. Drives the converter on the character sheet. Change these for a house economy.
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {COIN_KEYS.map((coin) => (
+                  <label key={coin} className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] uppercase tracking-wider text-slate-400">{coin}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={coinRates[coin]}
+                      onChange={(e) => setCoinRate(coin, parseInt(e.target.value || '0', 10) || 0)}
+                      className="w-full text-center bg-slate-950 border border-slate-700 rounded px-1 py-1 text-xs font-mono text-slate-200"
+                    />
+                  </label>
                 ))}
               </div>
             </div>
@@ -240,6 +385,10 @@ export default function Settings() {
               }}
             />
           </Section>
+        )}
+
+        {isGM && campaignId && (
+          <CampaignManagementPanel selfId={userId} campaignId={campaignId} />
         )}
 
         <Section title="Backup & restore">
@@ -307,6 +456,11 @@ export default function Settings() {
             </div>
           )}
         </Section>
+
+        <section>
+          <h2 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Membership</h2>
+          <LeaveCampaignRow />
+        </section>
 
         <Section title="Account">
           <AccountEmailRow email={email} />
@@ -504,6 +658,38 @@ function SwitchRow({
         />
       </span>
     </button>
+  );
+}
+
+function SelectRow<T extends string>({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-200 border-b border-slate-800 last:border-b-0">
+      <span className="flex-1 text-left">
+        {label}
+        {hint && <span className="block text-[11px] text-slate-500 font-normal">{hint}</span>}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="shrink-0 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </div>
   );
 }
 
