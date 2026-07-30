@@ -80,10 +80,18 @@ export type FogData = {
 export const DEFAULT_FOG_CELL = 50;
 export const defaultFog = (): FogData => ({ enabled: false, cell: DEFAULT_FOG_CELL, revealed: [] });
 
+/**
+ * A sight-blocking wall segment (Phase 2). GM-authored, never shown to players;
+ * feeds the line-of-sight computation. Structurally a visibility `Seg` plus an
+ * id. Stored in scene.data — tiny (four numbers), so no realtime-size concern.
+ */
+export type MapWall = { id: string; x1: number; y1: number; x2: number; y2: number };
+
 type SceneData = {
   shapes?: MapShape[];
   layers?: ImageLayer[];
   fog?: FogData;
+  walls?: MapWall[];
 };
 
 export type MapScene = {
@@ -97,6 +105,7 @@ export type MapScene = {
   shapes: MapShape[];
   layers: ImageLayer[];
   fog: FogData;
+  walls: MapWall[];
 };
 
 export type MapState = {
@@ -197,11 +206,12 @@ function rowToScene(r: SceneRow): MapScene {
     shapes: d.shapes ?? [],
     layers: d.layers ?? [],
     fog: d.fog ?? defaultFog(),
+    walls: d.walls ?? [],
   };
 }
 
-function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog'>): SceneData {
-  return { shapes: s.shapes, layers: s.layers, fog: s.fog };
+function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog' | 'walls'>): SceneData {
+  return { shapes: s.shapes, layers: s.layers, fog: s.fog, walls: s.walls };
 }
 
 function rowToState(r: StateRow): MapState {
@@ -243,6 +253,11 @@ type MapStore = {
   updateShape: (sceneId: string, shape: MapShape) => Promise<void>;
   removeShape: (sceneId: string, shapeId: string) => Promise<void>;
   clearShapes: (sceneId: string) => Promise<void>;
+
+  // ── Walls (per-scene, sight-blocking) ────────────────────────────────────
+  addWall: (sceneId: string, wall: MapWall) => Promise<void>;
+  removeWall: (sceneId: string, wallId: string) => Promise<void>;
+  clearWalls: (sceneId: string) => Promise<void>;
 
   // ── Fog of war (per-scene) ───────────────────────────────────────────────
   setFogEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
@@ -371,7 +386,7 @@ export const useMap = create<MapStore>((set, get) => ({
             const truncated = existing && newRow.data == null;
             const incoming = rowToScene(newRow);
             const merged: MapScene = truncated
-              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog }
+              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog, walls: existing!.walls }
               : incoming;
             set({
               scenes: scenes
@@ -646,6 +661,37 @@ export const useMap = create<MapStore>((set, get) => ({
     });
     try {
       await mutateSceneData(sceneId, () => ({ shapes: [] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  // ── Walls ───────────────────────────────────────────────────────────────
+  addWall: async (sceneId, wall) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [...s.walls, wall] } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ walls: [...s.walls, wall] }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  removeWall: async (sceneId, wallId) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.filter((w) => w.id !== wallId) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ walls: s.walls.filter((w) => w.id !== wallId) }));
+    } catch (e) {
+      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  clearWalls: async (sceneId) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [] } : s)) });
+    try {
+      await mutateSceneData(sceneId, () => ({ walls: [] }));
     } catch (e) {
       set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
     }

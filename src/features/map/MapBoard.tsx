@@ -7,6 +7,7 @@ import ImageLayers from './canvas/layers/ImageLayers';
 import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
 import FogLayer from './canvas/layers/FogLayer';
+import WallsLayer from './canvas/layers/WallsLayer';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
 import { CONDITIONS } from '../../data/conditions';
@@ -52,9 +53,10 @@ import {
   ArrowDown,
   Pencil,
   Cloud,
+  BrickWall,
 } from 'lucide-react';
 
-type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog';
+type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog' | 'wall';
 
 type Ping = { id: string; x: number; y: number; color: string };
 type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' };
@@ -447,6 +449,9 @@ export default function MapBoard() {
   const paintFogLocal = useMap((s) => s.paintFogLocal);
   const commitFog = useMap((s) => s.commitFog);
   const clearFog = useMap((s) => s.clearFog);
+  const addWall = useMap((s) => s.addWall);
+  const removeWall = useMap((s) => s.removeWall);
+  const clearWalls = useMap((s) => s.clearWalls);
 
   // The GM may stage a non-active scene by setting gm_preview_scene_id; their
   // local view follows that, while players always render the active scene.
@@ -1221,6 +1226,11 @@ export default function MapBoard() {
       paintFogAt(p);
       return;
     }
+    if (tool === 'wall') {
+      const g = mapGridSize || 50;
+      setDrafting({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
+      return;
+    }
     if (tool === 'circle' || tool === 'square' || tool === 'cone') {
       setDrafting(p);
       return;
@@ -1251,7 +1261,12 @@ export default function MapBoard() {
       setRuler({ ...ruler, x2: p.x, y2: p.y });
     }
     if (drafting) {
-      setDraftEnd(p);
+      if (tool === 'wall') {
+        const g = mapGridSize || 50;
+        setDraftEnd({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
+      } else {
+        setDraftEnd(p);
+      }
     }
     if (shapeDrag) {
       setShapeDragPos({ id: shapeDrag.id, x: p.x - shapeDrag.ox, y: p.y - shapeDrag.oy });
@@ -1339,6 +1354,19 @@ export default function MapBoard() {
       }
       setShapeDrag(null);
       setShapeDragPos(null);
+      return;
+    }
+    if (tool === 'wall' && drafting && draftEnd && isGM && currentSceneId) {
+      // Snapped endpoints; drop zero-length walls from a stray click.
+      if (drafting.x !== draftEnd.x || drafting.y !== draftEnd.y) {
+        void addWall(currentSceneId, {
+          id: uid(),
+          x1: drafting.x, y1: drafting.y,
+          x2: draftEnd.x, y2: draftEnd.y,
+        });
+      }
+      setDrafting(null);
+      setDraftEnd(null);
       return;
     }
     if (drafting && isGM && currentSceneId) {
@@ -1694,6 +1722,7 @@ export default function MapBoard() {
               {toolButton('square', SquareIcon, 'Square AoE', true)}
               {toolButton('cone', Triangle, 'Cone AoE', true)}
               {toolButton('fog', Cloud, 'Fog of war — paint to reveal/hide for players', true)}
+              {toolButton('wall', BrickWall, 'Walls — draw sight blockers (players never see them)', true)}
             </div>
             <div className="flex gap-1 mt-1">
               <button
@@ -1955,6 +1984,26 @@ export default function MapBoard() {
                     Drag on the map to {fogMode === 'reveal' ? 'reveal' : 're-hide'} squares.
                   </div>
                 </>
+              )}
+            </div>
+          )}
+
+          {isGM && tool === 'wall' && currentScene && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wider text-slate-500">Walls</div>
+                <span className="text-[11px] text-slate-500 font-mono">{currentScene.walls.length}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Drag to draw a sight-blocking wall (snaps to the grid). Double-click a wall to delete. Players never see walls — they only feel them through line of sight.
+              </div>
+              {currentScene.walls.length > 0 && (
+                <button
+                  onClick={() => currentSceneId && void clearWalls(currentSceneId)}
+                  className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                >
+                  Clear all walls
+                </button>
               )}
             </div>
           )}
@@ -2229,6 +2278,17 @@ export default function MapBoard() {
                   isGM={isGM}
                   canvasW={canvasW}
                   canvasH={canvasH}
+                />
+              )}
+
+              {/* Walls — GM only, above fog so they stay visible while editing */}
+              {isGM && currentScene && (
+                <WallsLayer
+                  walls={currentScene.walls}
+                  zoom={zoom}
+                  draftStart={tool === 'wall' ? drafting : null}
+                  draftEnd={tool === 'wall' ? draftEnd : null}
+                  onRemoveWall={currentSceneId ? (id) => void removeWall(currentSceneId, id) : undefined}
                 />
               )}
 
