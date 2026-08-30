@@ -45,6 +45,8 @@ import {
   List,
   ChevronDown,
   GripVertical,
+  X,
+  Plus,
 } from 'lucide-react';
 import { useVisibilityReload } from '../../hooks/useVisibilityReload';
 import { useCampaignSettings } from './campaignSettingsStore';
@@ -171,6 +173,9 @@ export default function Notes() {
   const noteOrder = useNotes((s) => s.noteOrder);
   const reorderNotes = useNotes((s) => s.reorderNotes);
   const activeNoteId = useNotes((s) => s.activeNoteId);
+  const openNoteIds = useNotes((s) => s.openNoteIds);
+  const closeNote = useNotes((s) => s.closeNote);
+  const moveOpenNote = useNotes((s) => s.moveOpenNote);
   const loadForCampaign = useNotes((s) => s.loadForCampaign);
   const subscribe = useNotes((s) => s.subscribe);
   const setActiveNote = useNotes((s) => s.setActiveNote);
@@ -573,6 +578,16 @@ export default function Notes() {
 
   const active = visibleNotes.find((n) => n.id === activeNoteId) ?? null;
 
+  // Open tabs, resolved to the notes the viewer can actually see (a tab whose
+  // note was deleted or hidden simply drops out). Kept in the store's tab order.
+  const openNotes = useMemo(() => {
+    const byId = new Map(visibleNotes.map((n) => [n.id, n]));
+    return openNoteIds.map((id) => byId.get(id)).filter((n): n is Note => !!n);
+  }, [openNoteIds, visibleNotes]);
+
+  // Which tab the pointer is dragging over (for reordering).
+  const [tabDragId, setTabDragId] = useState<string | null>(null);
+
   useEffect(() => {
     setCollapsedFolds(new Set());
   }, [active?.id]);
@@ -941,6 +956,58 @@ export default function Notes() {
         )}
 
         <section className="flex-1 min-w-0 flex flex-col">
+          {/* ── Open-note tabs ─────────────────────────────────────────────
+              Multiple notes stay open at once; click a tab to switch, drag to
+              reorder, × to close. Opening any note (sidebar, wiki link, or the
+              dashboard peek) appends a tab automatically. */}
+          {openNotes.length > 0 && (
+            <div className="flex items-stretch border-b border-slate-800 bg-slate-950 overflow-x-auto">
+              {openNotes.map((n) => {
+                const isActive = n.id === activeNoteId;
+                return (
+                  <div
+                    key={n.id}
+                    draggable
+                    onDragStart={(e) => { setTabDragId(n.id); e.dataTransfer.effectAllowed = 'move'; }}
+                    onDragOver={(e) => { if (tabDragId && tabDragId !== n.id) e.preventDefault(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (tabDragId && tabDragId !== n.id) moveOpenNote(tabDragId, n.id);
+                      setTabDragId(null);
+                    }}
+                    onDragEnd={() => setTabDragId(null)}
+                    onClick={() => setActiveNote(n.id)}
+                    onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeNote(n.id); } }}
+                    title={n.title || 'Untitled'}
+                    className={`group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 max-w-[180px] border-r border-slate-800 cursor-pointer shrink-0 ${
+                      isActive
+                        ? 'bg-slate-900 text-slate-100 border-b-2 border-b-sky-600'
+                        : 'text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'
+                    }`}
+                  >
+                    <NoteIconDisplay iconId={n.icon} size={12} />
+                    <span className="truncate text-xs">{n.title || 'Untitled'}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeNote(n.id); }}
+                      title="Close tab"
+                      className={`p-0.5 rounded hover:bg-slate-700 shrink-0 ${
+                        isActive ? 'text-slate-400 hover:text-slate-100' : 'text-slate-600 group-hover:text-slate-300'
+                      }`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                onClick={() => onCreateNote(null)}
+                title="New note"
+                className="px-2 text-slate-500 hover:text-sky-300 hover:bg-slate-900/60 shrink-0"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+          )}
           {!active && (
             <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
               Select or create a note.
