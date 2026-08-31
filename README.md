@@ -1,6 +1,6 @@
 <img width="480" height="168" alt="Arc 2026-04-23 22 11 36" src="https://github.com/user-attachments/assets/985fd684-b3d0-44e8-a186-8c46166327f8" />
 
-# ⚔️ Grimoire — Version 1.1.0
+# ⚔️ Grimoire — Version 1.1.1
 - Built with [Claude](https://www.anthropic.com/) Sonnet 4.6 and Opus 4.7.
 - Release notes: [CHANGELOG.md](./CHANGELOG.md)
 - New features are published to [Preview](https://www.grimoire-preview.vercel.app/). Use your normal login credentials to view them.
@@ -11,7 +11,7 @@ A real-time, multiplayer Game Master companion for running **Dungeons & Dragons 
 
 ## Table of Contents
 
-- [What's new in 1.1.0](#whats-new-in-110)
+- [What's new in 1.1.1](#whats-new-in-111)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
@@ -25,18 +25,15 @@ A real-time, multiplayer Game Master companion for running **Dungeons & Dragons 
 
 ---
 
-## What's new in 1.1.0
+## What's new in 1.1.1
 
-A big release. The headlines:
+A map-focused release. The headlines:
 
-- **Full character system** — 2024 SRD-aware Character Builder wizard, redesigned Character Sheet with Actions / Features / Inventory / Spells panels, and a Level-Up modal that walks the player through HP gain, new features, subclass picks, ASI/feat choices and spell prep.
-- **Map scenes + image layers** — every campaign can hold many scenes; each scene composes multiple free-positioned image layers with per-layer visibility. GMs can preview a scene privately before flipping the player view.
-- **Edit tool for the map** — Select stays focused on tokens; the new Edit tool exposes drag-to-move + corner-handle-to-resize for both images and tokens, plus an inline size input on each token row.
-- **HP linked across every surface** — Character Sheet, Party panel, Initiative tracker and Map tokens now share one HP value per PC. Conditions sync the same way (Map ↔ Sheet ↔ Initiative ↔ Party).
-- **Co-GM role** — full GM permissions except deleting the campaign, so you can hand a friend the steering wheel without handing them the keys.
-- **Dashboard chat + draggable Quick Dice** — campaign chat is now a Dashboard tab with whispers, GM-only labels and chip mentions; Quick Dice can be dragged anywhere on screen.
-- **Mobile shell** — full hamburger-driven master-detail layout on phones, with full-screen modals and condensed sheet density. Desktop is unchanged.
-- **Light-mode polish** — a long sweep over every surface the original light-mode pass missed: feats, sidebar nav, decorators, init tracker, party cards, the CodeMirror selection highlight, table chrome.
+- **Fog of war, line of sight & lighting** — paint fog by hand or cast dynamic line-of-sight from each player token; mark a scene dark and place lights (or give a token a light/vision radius) so the party sees only what a wall-bounded light reveals. Explored areas stay dimly lit.
+- **Walls & doors** — draw sight-blocking walls (straight, curved or multi-point polylines, snap-to-grid or freehand) that also stop movement. Turn a single segment into a **door** that opens, closes and locks; players see doors and pass through open ones.
+- **Deeper map editing** — grouped control tabs, undo/redo, copy/paste, drag-to-edit wall vertices, **Connect** mode to join any two vertices, draggable lights, and a **range-band** ruler (very close / close / far / very far).
+- **Faster maps** — battlemap images now upload to Storage instead of bloating the scene row, so heavy wall/light editing no longer trips database timeouts (existing scenes auto-migrate).
+- **Multi-note tabs** — keep several notes open at once above the editor, plus a **Mind Map** whose nodes carry each note's file icon and colour, and a full live-preview editor in the Dashboard's quick-edit.
 
 Full notes in [CHANGELOG.md](./CHANGELOG.md).
 

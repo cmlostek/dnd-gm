@@ -4,9 +4,9 @@ All notable changes to Grimoire are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.1.1] — 2026-08-31
 
-Work on the `preview` branch since 1.1.0. The headline is a full
+A map-focused release since 1.1.0. The headline is a full
 fog-of-war / line-of-sight / lighting system with GM-authored walls and
 interactive doorways, a much deeper map-editing toolkit, and multi-note
 tabs.
