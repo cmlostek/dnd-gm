@@ -35,8 +35,9 @@ export default function WallsLayer({
   draftStart: Pt | null;
   draftEnd: Pt | null;
   onRemoveWall?: (id: string) => void;
-  /** Single-click a wall (used by door-edit mode to convert it to a doorway). */
-  onWallClick?: (id: string) => void;
+  /** Single-click a wall (select, or in door-edit mode split a segment into a
+   *  door — the event carries the click position). */
+  onWallClick?: (id: string, e: React.MouseEvent) => void;
   /** Press vertex `index` of a wall (drag to move, click to extend). */
   onVertexDown?: (wall: MapWall, index: number, e: React.MouseEvent) => void;
   /** Add a bend by dragging the midpoint of segment `segIndex` (verts i…i+1). */
@@ -83,7 +84,7 @@ export default function WallsLayer({
               strokeLinecap="round"
               strokeLinejoin="round"
               style={{ cursor: onWallClick || onRemoveWall ? 'pointer' : 'default' }}
-              onClick={onWallClick ? () => onWallClick(w.id) : undefined}
+              onClick={onWallClick ? (e) => onWallClick(w.id, e) : undefined}
               onDoubleClick={onRemoveWall ? () => onRemoveWall(w.id) : undefined}
             />
             <path

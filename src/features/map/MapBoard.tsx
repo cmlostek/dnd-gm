@@ -100,6 +100,16 @@ type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' }
 // Shape palette (semi-transparent)
 const SHAPE_COLORS = ['#f59e0b80', '#10b98180', '#3b82f680', '#ef444480', '#a855f780'];
 
+/** Distance from point p to segment a→b (used to pick which wall segment a
+ *  door-edit click landed on). */
+function distToSegment(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
 // Narrative range bands for the range ruler — cumulative radii in feet, mapped
 // to logical units at 5 ft/cell. Tuned to common D&D reach breakpoints.
 const RANGE_BANDS: { label: string; ft: number; color: string }[] = [
@@ -500,6 +510,7 @@ export default function MapBoard() {
   const clearFog = useMap((s) => s.clearFog);
   const addWall = useMap((s) => s.addWall);
   const updateWall = useMap((s) => s.updateWall);
+  const replaceWall = useMap((s) => s.replaceWall);
   const removeWall = useMap((s) => s.removeWall);
   const clearWalls = useMap((s) => s.clearWalls);
   const addLight = useMap((s) => s.addLight);
@@ -1863,13 +1874,36 @@ export default function MapBoard() {
     (id: string) => (currentScene?.walls ?? []).find((w) => w.id === id) ?? null,
     [currentScene],
   );
-  /** Turn a plain wall into a closed, unlocked doorway (or revert it). */
+  /** Revert a doorway back to a plain wall (kept as its own segment). */
   const setWallIsDoor = useCallback((id: string, isDoor: boolean) => {
     const w = wallById(id);
     if (!w || !currentSceneId) return;
     if (isDoor && !w.door) void updateWall(currentSceneId, { ...w, door: { open: false, locked: false } });
     else if (!isDoor && w.door) { const { door: _drop, ...rest } = w; void updateWall(currentSceneId, rest); }
   }, [wallById, currentSceneId, updateWall]);
+  /** Turn the single wall segment nearest `point` into a doorway, splitting the
+   *  wall so only that segment becomes the door (the rest stays a wall). */
+  const makeSegmentDoor = useCallback((id: string, point: { x: number; y: number }) => {
+    const w = wallById(id);
+    if (!w || w.door || !currentSceneId) return;
+    const pts = wallPoints(w);
+    if (pts.length < 2) return;
+    let bestI = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = distToSegment(point, pts[i], pts[i + 1]);
+      if (d < bestD) { bestD = d; bestI = i; }
+    }
+    const a = pts[bestI];
+    const b = pts[bestI + 1];
+    const pre = pts.slice(0, bestI + 1);   // vertices up to and including a
+    const post = pts.slice(bestI + 1);     // vertices from b to the end
+    const pieces: MapWall[] = [];
+    if (pre.length >= 2) pieces.push(withWallPoints({ id: uid(), x1: 0, y1: 0, x2: 0, y2: 0 }, pre));
+    pieces.push({ id: uid(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, door: { open: false, locked: false } });
+    if (post.length >= 2) pieces.push(withWallPoints({ id: uid(), x1: 0, y1: 0, x2: 0, y2: 0 }, post));
+    void replaceWall(currentSceneId, w.id, pieces);
+  }, [wallById, currentSceneId, replaceWall]);
   const patchDoor = useCallback((id: string, patch: Partial<NonNullable<MapWall['door']>>) => {
     const w = wallById(id);
     if (!w || !w.door || !currentSceneId) return;
@@ -2633,7 +2667,7 @@ export default function MapBoard() {
 
               <div className="text-[11px] text-slate-500">
                 {doorEditMode
-                  ? 'Click a wall to turn it into a doorway; click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
+                  ? 'Click a wall segment to turn just that segment into a doorway (the rest stays a wall); click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
                   : wallExtend
                     ? 'Extending: click to drop each connected point; right-click or Esc to finish.'
                     : `Drag to draw a wall (${wallSnap ? 'snaps to the grid' : 'freehand'}). Click an end vertex to continue the wall from it (drag a vertex to move). Drag a segment’s midpoint dot to add a bend; alt/right-click a vertex to remove it. Click a wall to select (Ctrl/Cmd+C/V copy-paste, Delete removes); double-click to delete.`}
@@ -3120,7 +3154,7 @@ export default function MapBoard() {
                   onVertexRemove={onVertexRemove}
                   onWallClick={
                     doorEditMode && panelTab === 'walls'
-                      ? (id) => setWallIsDoor(id, true)
+                      ? (id, e) => makeSegmentDoor(id, screenToLogical(e))
                       : (id) => setSelection({ kind: 'wall', id })
                   }
                   selectedId={selection?.kind === 'wall' ? selection.id : null}

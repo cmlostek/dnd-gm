@@ -324,6 +324,9 @@ type MapStore = {
   // ── Walls (per-scene, sight-blocking) ────────────────────────────────────
   addWall: (sceneId: string, wall: MapWall) => Promise<void>;
   updateWall: (sceneId: string, wall: MapWall) => Promise<void>;
+  /** Replace one wall with zero or more others in a single write (used to split
+   *  a wall when turning one of its segments into a doorway). */
+  replaceWall: (sceneId: string, oldId: string, newWalls: MapWall[]) => Promise<void>;
   removeWall: (sceneId: string, wallId: string) => Promise<void>;
   clearWalls: (sceneId: string) => Promise<void>;
 
@@ -885,6 +888,18 @@ export const useMap = create<MapStore>((set, get) => ({
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  replaceWall: async (sceneId, oldId, newWalls) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    const splice = (walls: MapWall[]) => [...walls.filter((w) => w.id !== oldId), ...newWalls];
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: splice(s.walls) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ walls: splice(s.walls) }));
     } catch (e) {
       set({ scenes: prev, error: errMsg(e) });
     }
