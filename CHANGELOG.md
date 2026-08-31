@@ -4,6 +4,92 @@ All notable changes to Grimoire are documented in this file. Format based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows
 [SemVer](https://semver.org/).
 
+## [1.1.1] — 2026-08-31
+
+A map-focused release since 1.1.0. The headline is a full
+fog-of-war / line-of-sight / lighting system with GM-authored walls and
+interactive doorways, a much deeper map-editing toolkit, and multi-note
+tabs.
+
+### Added
+
+#### Fog of war, vision & lighting
+
+- **Manual fog of war** — the GM paints reveal/hide over a grid; players
+  see black where it's hidden, the GM a dim tint. "Cover everything
+  again" re-fogs the scene.
+- **Dynamic line-of-sight fog** — sight is cast from each player-owned
+  token against the GM's walls via an endpoint ray-casting visibility
+  polygon, clearing fog only within view. **Explored-stays-dim memory**
+  keeps places the party has seen faintly lit after they move on.
+- **Scene darkness + light sources** — mark a scene dark and place
+  lights (or give a token a light/vision radius that travels with it);
+  in the dark the party sees only where line of sight overlaps a
+  wall-bounded light. Lights are **click-and-drag** to reposition.
+
+#### Walls & doors
+
+- **Wall authoring** — draw sight-blocking walls that also stop token
+  movement (slide-along collision). Straight, curved, or multi-point
+  **polyline** walls; draw **snap-to-grid or freehand**.
+- **Wall editing** — drag any vertex, drag a segment's midpoint dot to
+  add a bend, alt/right-click a vertex to remove it. **Extend** a wall
+  by clicking its end vertex (or clicking near it); **Connect** mode
+  joins any two vertices with a new segment.
+- **Doorways** — turn a single wall segment into a door (splitting the
+  wall so the rest stays solid). Doors show for everyone — **solid when
+  closed, dashed when open**, with a lock badge and a hover card showing
+  name + state. The GM opens/closes/locks; players see and pass through
+  open ones. Door endpoints **weld** to their flanking walls so a closed
+  door seals with no token-sized gap for movement or sight.
+- **Players see walls** as read-only grey lines.
+
+#### Map editing
+
+- **Grouped controls** — the flat tool grid became a tab bar (Play ·
+  Shapes · Fog · Walls · Lights); each tab reveals only its own panel.
+- **Undo / redo** for scene edits — walls, doors, shapes, lights and
+  layers — via Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z (and Ctrl+Y) plus sidebar
+  buttons. Per-scene history that shares element references so it never
+  duplicates layer image data.
+- **Copy / paste / delete** a selected wall (Ctrl/Cmd+C · Ctrl/Cmd+V ·
+  Delete, Esc to deselect).
+- **Range-band ruler** — a second ruler mode that draws very close /
+  close / far / very far reach rings from a dropped origin.
+
+#### Notes
+
+- **Multi-note tabs** — keep several notes open at once above the editor;
+  click to switch, drag to reorder, middle-click or × to close, + to add.
+  Opening a note anywhere (sidebar, wiki link, dashboard peek) adds a tab;
+  the open set persists locally.
+- **Mind Map nodes** now render each note's own file icon and colour, and
+  can be dragged to reposition.
+- **Dashboard quick-edit** embeds the full live-preview note editor
+  (decorators, secrets, dice, collaboration) instead of a plain textarea.
+
+### Changed
+
+- **Map images now host in Supabase Storage** (the `note-images` bucket)
+  instead of being embedded as base64 data-URLs in the scene row. Scene
+  writes stay tiny, so rapid wall/shape/light editing no longer trips the
+  Postgres statement timeout. Existing scenes auto-migrate their embedded
+  images on load.
+- **Switch campaign** moved from the Settings → Account list back to the
+  sidebar footer, directly above Settings.
+
+### Fixed
+
+- Map write failures now surface the real Postgres message and
+  auto-dismiss, instead of showing an opaque `[object Object]` that stuck
+  in the sidebar.
+
+### Database migrations
+
+- None. Walls, doors, lights and fog live in the existing
+  `map_scenes.data` jsonb; map images reuse the existing `note-images`
+  Storage bucket.
+
 ## [1.1.0] — 2026-06-27
 
 A feature release covering everything that landed between 1.0.2 and the
