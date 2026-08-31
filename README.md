@@ -56,7 +56,10 @@ A live Obsidian-style markdown editor with custom inline syntax. Syntax markers 
 - **`@{Player Name}` mentions** click through to that player's Character Sheet.
 - **Secrets** `{{hidden text}}` rendered as interactive lock/reveal cards; players only see revealed ones.
 - **Inline dice rolls** `$1d20 + 5$` — click to roll into the dice panel.
-- **Multi-tab safe** — opening the same note in two tabs no longer races the editor into a duplicate-content state.
+- **Multi-note tabs** — keep several notes open at once above the editor; click to switch, drag to reorder, middle-click or × to close. Opening a note anywhere (sidebar, wiki link, dashboard peek) adds a tab, and the open set is remembered between sessions.
+- **Mind Map** — a force-directed graph of your notes linked by `[[wiki]]` references and clustered by `#tag`. Each node shows the note's own file icon and colour and can be dragged to reposition.
+- **Dashboard quick-edit** — the Recent Notes peek on the Dashboard opens the full live-preview editor (decorators, secrets, dice, live collaboration), not a plain textarea.
+- **Multi-tab safe** — opening the same note in two browser tabs no longer races the editor into a duplicate-content state.
 
 ### 🧙 Character system
 A full 2024 SRD-aware character pipeline, from creation to level-up to in-game tracking.
@@ -106,20 +109,24 @@ A full 2024 SRD-aware character pipeline, from creation to level-up to in-game t
 - **Two-stage visibility** — reveal an NPC's identity without exposing their stats, or vice versa.
 
 ### 🗺️ Map Board
-A scene-based tactical surface. Every campaign holds a list of scenes; each scene owns its own grid, image layers, shapes and tokens.
+A scene-based tactical surface. Every campaign holds a list of scenes; each scene owns its own grid, image layers, shapes, walls, lights and tokens. The GM-side controls are grouped into tabs — **Play · Shapes · Fog · Walls · Lights** — each revealing only its own panel.
 
 - **Multiple scenes per campaign** — switch the active scene to flip the player view; GMs can stage a non-active scene privately first (the **Previewing** badge stays on screen so it's clear which view is yours).
-- **Image layers** — each scene composes any number of positioned image layers. Toggle layer visibility, rename, reorder, drop in a new image without disturbing the others.
+- **Image layers** — each scene composes any number of positioned image layers. Toggle layer visibility, rename, reorder, drop in a new image without disturbing the others. Images upload to Storage, so editing stays fast no matter how large the battlemap.
+- **Fog of war** — paint reveal/hide by hand, or switch to **line-of-sight** fog that's cast from each player token against the walls. Explored areas stay dimly lit after the party moves on.
+- **Lighting & darkness** — mark a scene dark and place lights (or give a token a light/vision radius that moves with it); in the dark the party sees only where sight overlaps a wall-bounded light. Drag lights to reposition.
+- **Walls** — draw sight-blocking walls that also stop token movement. Straight, curved or multi-point **polyline** walls, snap-to-grid or freehand. Drag vertices, add bends, **extend** a wall from its end, or use **Connect** mode to join any two vertices. Players see walls as grey lines.
+- **Doorways** — turn a single wall segment into a door: **solid when closed, dashed when open**, lockable by the GM, with a hover card showing its name and state. Players see doors and walk through open ones; closed doors seal flush against their walls.
+- **Undo / redo, copy / paste** — Ctrl/Cmd+Z (and Shift for redo) across all scene edits; select a wall and Ctrl/Cmd+C / V to duplicate, Delete to remove.
 - **Edit tool** — Select moves tokens and shapes (the default). Switch to **Edit** (GM-only) to drag images and tokens around or grab the corner handle to resize them. Tokens also have a numeric size input in the sidebar for precise sizing.
 - **Tokens** with emoji, owner-tinted ring, name label, and a damage / heal input that runs the math for you.
 - **Linked HP & conditions** — every token's HP and conditions sync with the matching PC on Sheet, Party and Initiative.
 - **Pre-seed from creatures** — drop in tokens from your Party, NPCs or Stat Blocks with HP/AC already filled.
 - **Area-of-effect shapes** — circles, squares, cones with adjustable size and colour.
-- **Ruler** for measuring distances.
+- **Ruler** for measuring distances, plus a **range-band** mode (very close / close / far / very far) for ability and action reach.
 - **Ping tool** — click anywhere to drop a 2-second pulse visible to everyone viewing the map.
 - **Viewer presence** — avatar stack shows who else has the map open right now.
 - **Fit-to-content** — fits the bounding box of the canvas + every visible image layer, so large layers don't end up off-screen.
-- **Realtime-safe** — large image data URLs that exceed Supabase Realtime's per-message cap no longer wipe your local state on echo.
 
 ### 👥 Party
 - Add characters manually or **import from D&D Beyond JSON**.
