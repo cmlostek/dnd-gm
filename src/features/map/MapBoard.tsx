@@ -586,6 +586,8 @@ export default function MapBoard() {
   const lightDragRef = useRef<{ id: string } | null>(null);
   // Ruler mode: plain distance, or concentric range bands.
   const [rulerMode, setRulerMode] = useState<'distance' | 'range'>('distance');
+  // True while a map image is uploading to Storage.
+  const [imageUploading, setImageUploading] = useState(false);
   const [tokenName, setTokenName] = useState('');
   const [tokenEmoji, setTokenEmoji] = useState('');
   // Optional creature template — when set, the next placed token seeds
@@ -773,6 +775,35 @@ export default function MapBoard() {
     const t = setTimeout(() => useMap.setState({ error: null }), 6000);
     return () => clearTimeout(t);
   }, [mapError]);
+
+  // One-shot heal: older scenes embedded their map image as a data-URL inside
+  // the scene jsonb, so every edit rewrote megabytes and hit the DB statement
+  // timeout. On load, the GM's client re-hosts any such layer to Storage and
+  // swaps in the small public URL. Best-effort: a failure just leaves the
+  // data-URL in place (it still renders) and retries next load.
+  const migratedRef = useRef(false);
+  useEffect(() => {
+    if (!isGM || !campaignId || !mapLoaded || migratedRef.current) return;
+    const targets: { sceneId: string; layer: { id: string; url: string; name: string; x: number; y: number; w: number; h: number; rotation: number; hidden: boolean } }[] = [];
+    for (const s of useMap.getState().scenes) {
+      for (const l of s.layers) if (typeof l.url === 'string' && l.url.startsWith('data:')) targets.push({ sceneId: s.id, layer: l });
+    }
+    if (targets.length === 0) return;
+    migratedRef.current = true;
+    void (async () => {
+      for (const { sceneId, layer } of targets) {
+        try {
+          const blob = await (await fetch(layer.url)).blob();
+          const ext = (blob.type.split('/')[1] ?? 'png').replace(/[^a-z0-9]/g, '') || 'png';
+          const path = `${campaignId}/map/${crypto.randomUUID()}.${ext}`;
+          const { error } = await supabase.storage.from('note-images').upload(path, blob, { contentType: blob.type, upsert: false });
+          if (error) continue;
+          const url = supabase.storage.from('note-images').getPublicUrl(path).data.publicUrl;
+          await updateLayer(sceneId, { ...layer, url });
+        } catch { /* best effort — leave the data-URL layer as-is */ }
+      }
+    })();
+  }, [isGM, campaignId, mapLoaded, updateLayer]);
 
   // ── Keyboard: undo/redo/copy/paste/delete (GM scene editing) ─────────────
   useEffect(() => {
@@ -1697,51 +1728,57 @@ export default function MapBoard() {
   // their natural size but drop in at the canvas centre so the GM can drag
   // them where they belong.
   const onLoadBg = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isGM || !currentSceneId) return;
+    if (!isGM || !currentSceneId || !campaignId) return;
     const f = e.target.files?.[0];
     if (!f) return;
-    const filename = f.name.replace(/\.[^.]+$/, '');
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
-        const w = img.naturalWidth || 1000;
-        const h = img.naturalHeight || 1000;
-        const isFirstLayer = (currentScene?.layers.length ?? 0) === 0;
-        if (isFirstLayer) {
-          // Resize the canvas to fit, drop the image at origin.
-          void setSceneCanvas(currentSceneId, w, h);
-          void addLayer(currentSceneId, {
-            url: dataUrl,
-            name: filename || 'Background',
-            x: 0,
-            y: 0,
-            w,
-            h,
-            rotation: 0,
-            hidden: false,
-          });
-        } else {
-          // Centre the new layer on the existing canvas.
-          void addLayer(currentSceneId, {
-            url: dataUrl,
-            name: filename || `Layer ${(currentScene?.layers.length ?? 0) + 1}`,
-            x: Math.round(canvasW / 2 - w / 2),
-            y: Math.round(canvasH / 2 - h / 2),
-            w,
-            h,
-            rotation: 0,
-            hidden: false,
-          });
-        }
-        requestAnimationFrame(fitToScreen);
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(f);
     e.target.value = '';
+    const filename = f.name.replace(/\.[^.]+$/, '');
+    const sceneId = currentSceneId;
+
+    // Measure dimensions from a local object URL — no base64 needed.
+    const objUrl = URL.createObjectURL(f);
+    const img = new Image();
+    img.onerror = () => URL.revokeObjectURL(objUrl);
+    img.onload = () => {
+      const w = img.naturalWidth || 1000;
+      const h = img.naturalHeight || 1000;
+      URL.revokeObjectURL(objUrl);
+
+      // Upload to Storage and store only the public URL. Embedding the image
+      // as a data-URL in the scene's jsonb made every wall/shape/light edit
+      // rewrite megabytes, which hit the Postgres statement timeout ("canceling
+      // statement due to statement timeout") and rolled back the edit.
+      void (async () => {
+        setImageUploading(true);
+        try {
+          const ext = (f.name.split('.').pop() ?? 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+          const path = `${campaignId}/map/${crypto.randomUUID()}.${ext}`;
+          const { error } = await supabase.storage
+            .from('note-images')
+            .upload(path, f, { contentType: f.type, upsert: false });
+          if (error) { useMap.setState({ error: `Image upload failed: ${error.message}` }); return; }
+          const url = supabase.storage.from('note-images').getPublicUrl(path).data.publicUrl;
+
+          const isFirstLayer = (useMap.getState().scenes.find((s) => s.id === sceneId)?.layers.length ?? 0) === 0;
+          if (isFirstLayer) {
+            void setSceneCanvas(sceneId, w, h);
+            void addLayer(sceneId, { url, name: filename || 'Background', x: 0, y: 0, w, h, rotation: 0, hidden: false });
+          } else {
+            void addLayer(sceneId, {
+              url,
+              name: filename || `Layer ${(useMap.getState().scenes.find((s) => s.id === sceneId)?.layers.length ?? 0) + 1}`,
+              x: Math.round(canvasW / 2 - w / 2),
+              y: Math.round(canvasH / 2 - h / 2),
+              w, h, rotation: 0, hidden: false,
+            });
+          }
+          requestAnimationFrame(fitToScreen);
+        } finally {
+          setImageUploading(false);
+        }
+      })();
+    };
+    img.src = objUrl;
   };
 
   // ── Computed values ───────────────────────────────────────────────────────
@@ -2007,9 +2044,9 @@ export default function MapBoard() {
       <PageHeader title="Map">
         {isGM && currentSceneId && (
           <>
-            <label className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 rounded cursor-pointer flex items-center gap-1">
-              <ImagePlus size={14} /> Add image
-              <input type="file" accept="image/*" onChange={onLoadBg} className="hidden" />
+            <label className={`px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 rounded flex items-center gap-1 ${imageUploading ? 'opacity-60 cursor-wait' : 'cursor-pointer'}`}>
+              <ImagePlus size={14} /> {imageUploading ? 'Uploading…' : 'Add image'}
+              <input type="file" accept="image/*" onChange={onLoadBg} disabled={imageUploading} className="hidden" />
             </label>
             <button
               onClick={() => void setSceneShowGrid(currentSceneId, !mapShowGrid)}
