@@ -46,6 +46,8 @@ import {
   EyeOff,
   Radio,
   Maximize2,
+  Undo2,
+  Redo2,
   ZoomIn,
   ZoomOut,
   AlertCircle,
@@ -97,6 +99,15 @@ type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' }
 
 // Shape palette (semi-transparent)
 const SHAPE_COLORS = ['#f59e0b80', '#10b98180', '#3b82f680', '#ef444480', '#a855f780'];
+
+// Narrative range bands for the range ruler — cumulative radii in feet, mapped
+// to logical units at 5 ft/cell. Tuned to common D&D reach breakpoints.
+const RANGE_BANDS: { label: string; ft: number; color: string }[] = [
+  { label: 'Very close', ft: 5,   color: '#4ade80' },
+  { label: 'Close',      ft: 30,  color: '#38bdf8' },
+  { label: 'Far',        ft: 60,  color: '#fbbf24' },
+  { label: 'Very far',   ft: 120, color: '#f87171' },
+];
 const EMOJI_PRESETS = ['🧙', '🗡️', '🏹', '🛡️', '🐉', '👹', '🧌', '💀', '🐺', '🕷️', '👑', '🧚'];
 
 // NPC.icon stores a Lucide icon key ("shield", "swords", …), not an emoji.
@@ -458,6 +469,9 @@ export default function MapBoard() {
   const tokens = useMap((s) => s.tokens);
   const mapLoaded = useMap((s) => s.loaded);
   const mapError = useMap((s) => s.error);
+  const undo = useMap((s) => s.undo);
+  const redo = useMap((s) => s.redo);
+  const history = useMap((s) => s.history);
   const loadForCampaign = useMap((s) => s.loadForCampaign);
   const subscribe = useMap((s) => s.subscribe);
   const setSceneGridSize = useMap((s) => s.setSceneGridSize);
@@ -489,6 +503,7 @@ export default function MapBoard() {
   const removeWall = useMap((s) => s.removeWall);
   const clearWalls = useMap((s) => s.clearWalls);
   const addLight = useMap((s) => s.addLight);
+  const updateLight = useMap((s) => s.updateLight);
   const removeLight = useMap((s) => s.removeLight);
   const clearLights = useMap((s) => s.clearLights);
   const setAmbientDark = useMap((s) => s.setAmbientDark);
@@ -556,6 +571,16 @@ export default function MapBoard() {
   const [doorEditMode, setDoorEditMode] = useState(false);
   // Hovered doorway → styled tooltip (name + state), positioned at the cursor.
   const [doorHover, setDoorHover] = useState<DoorHover | null>(null);
+  // Wall drawing/editing: snap vertices to the grid, or place them freehand.
+  const [wallSnap, setWallSnap] = useState(true);
+  // Currently-selected map element (for copy/paste/delete).
+  const [selection, setSelection] = useState<{ kind: 'wall' | 'shape'; id: string } | null>(null);
+  const clipboardRef = useRef<{ kind: 'wall' | 'shape'; data: MapWall | MapShape } | null>(null);
+  // Dragging a light marker (GM). Committed to the store on mouse-up.
+  const [lightDrag, setLightDrag] = useState<{ id: string; x: number; y: number } | null>(null);
+  const lightDragRef = useRef<{ id: string } | null>(null);
+  // Ruler mode: plain distance, or concentric range bands.
+  const [rulerMode, setRulerMode] = useState<'distance' | 'range'>('distance');
   const [tokenName, setTokenName] = useState('');
   const [tokenEmoji, setTokenEmoji] = useState('');
   // Optional creature template — when set, the next placed token seeds
@@ -735,6 +760,80 @@ export default function MapBoard() {
       window.removeEventListener('keyup', onKeyUp);
     };
   }, []);
+
+  // Transient map errors auto-dismiss so a one-off write hiccup doesn't leave a
+  // scary banner stuck in the sidebar.
+  useEffect(() => {
+    if (!mapError) return;
+    const t = setTimeout(() => useMap.setState({ error: null }), 6000);
+    return () => clearTimeout(t);
+  }, [mapError]);
+
+  // ── Keyboard: undo/redo/copy/paste/delete (GM scene editing) ─────────────
+  useEffect(() => {
+    if (!isGM) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
+      if (e.key === 'Escape' && selection) { setSelection(null); return; }
+      if (!currentSceneId) return;
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+
+      if (mod && k === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) void redo(currentSceneId);
+        else void undo(currentSceneId);
+        return;
+      }
+      if (mod && k === 'y') { e.preventDefault(); void redo(currentSceneId); return; }
+
+      // Read live scene data from the store so this handler doesn't need to
+      // close over (and re-bind on) every wall/grid change.
+      const scene = useMap.getState().scenes.find((s) => s.id === currentSceneId);
+
+      if (mod && k === 'c') {
+        if (!selection) return;
+        if (selection.kind === 'wall') {
+          const w = scene?.walls.find((x) => x.id === selection.id);
+          if (w) clipboardRef.current = { kind: 'wall', data: JSON.parse(JSON.stringify(w)) };
+        }
+        return;
+      }
+      if (mod && k === 'v') {
+        const cb = clipboardRef.current;
+        if (!cb) return;
+        e.preventDefault();
+        const off = scene?.grid_size || 50;
+        if (cb.kind === 'wall') {
+          const src = cb.data as MapWall;
+          const shift = (p: { x: number; y: number }) => ({ x: p.x + off, y: p.y + off });
+          const nw: MapWall = {
+            ...src,
+            id: uid(),
+            x1: src.x1 + off, y1: src.y1 + off,
+            x2: src.x2 + off, y2: src.y2 + off,
+            cx: src.cx != null ? src.cx + off : undefined,
+            cy: src.cy != null ? src.cy + off : undefined,
+            points: src.points?.map(shift),
+          };
+          void addWall(currentSceneId, nw);
+          setSelection({ kind: 'wall', id: nw.id });
+          // Keep pasting to tile further copies.
+          clipboardRef.current = { kind: 'wall', data: JSON.parse(JSON.stringify(nw)) };
+        }
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selection) {
+        e.preventDefault();
+        if (selection.kind === 'wall') void removeWall(currentSceneId, selection.id);
+        else void removeShape(currentSceneId, selection.id);
+        setSelection(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isGM, currentSceneId, undo, redo, selection, addWall, removeWall, removeShape]);
 
   // ── Fit content to screen ────────────────────────────────────────────────
   // Fits the bounding box of the canvas border PLUS every visible image
@@ -1224,7 +1323,10 @@ export default function MapBoard() {
     // first click anchors the start, mousemove tracks the cursor, the next
     // click clears the ruler so it stops following you around.
     if (tool === 'ruler') {
-      if (ruler) setRuler(null);
+      // Range mode drops (or re-drops) a fixed origin the bands radiate from;
+      // distance mode toggles the measuring line on/off.
+      if (rulerMode === 'range') setRuler({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
+      else if (ruler) setRuler(null);
       else setRuler({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
       return;
     }
@@ -1281,7 +1383,7 @@ export default function MapBoard() {
     }
     if (tool === 'wall') {
       const g = mapGridSize || 50;
-      setDrafting({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
+      setDrafting(wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y });
       return;
     }
     if (tool === 'light') {
@@ -1309,10 +1411,14 @@ export default function MapBoard() {
       // sync with the first/last point.
       const g = mapGridSize || 50;
       const idx = wallEditRef.current.index;
-      const pts = wallPoints(wallBend).map((pt, i) =>
-        i === idx ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : pt,
-      );
+      const snapped = wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y };
+      const pts = wallPoints(wallBend).map((pt, i) => (i === idx ? snapped : pt));
       setWallBend(withWallPoints(wallBend, pts));
+      return;
+    }
+
+    if (lightDragRef.current) {
+      setLightDrag({ id: lightDragRef.current.id, x: p.x, y: p.y });
       return;
     }
 
@@ -1342,13 +1448,13 @@ export default function MapBoard() {
       setLocalDrag({ id: draggingTokenId, x: next.x, y: next.y });
       return;
     }
-    if (ruler && tool === 'ruler') {
+    if (ruler && tool === 'ruler' && rulerMode === 'distance') {
       setRuler({ ...ruler, x2: p.x, y2: p.y });
     }
     if (drafting) {
       if (tool === 'wall') {
         const g = mapGridSize || 50;
-        setDraftEnd({ x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g });
+        setDraftEnd(wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y });
       } else {
         setDraftEnd(p);
       }
@@ -1406,6 +1512,16 @@ export default function MapBoard() {
       wallEditRef.current = null;
       if (wallBend && currentSceneId) void updateWall(currentSceneId, wallBend);
       setWallBend(null);
+      return;
+    }
+    if (lightDragRef.current) {
+      const d = lightDrag;
+      lightDragRef.current = null;
+      if (d && currentSceneId) {
+        const l = (currentScene?.lights ?? []).find((x) => x.id === d.id);
+        if (l && (l.x !== d.x || l.y !== d.y)) void updateLight(currentSceneId, { ...l, x: d.x, y: d.y });
+      }
+      setLightDrag(null);
       return;
     }
     if (fogPaintingRef.current) {
@@ -1628,6 +1744,13 @@ export default function MapBoard() {
     if (!w || !w.door || !currentSceneId) return;
     void updateWall(currentSceneId, { ...w, door: { ...w.door, ...patch } });
   }, [wallById, currentSceneId, updateWall]);
+  // Begin dragging a light marker (GM). Committed to the store on mouse-up.
+  const onLightDown = useCallback((id: string) => {
+    const l = (currentScene?.lights ?? []).find((x) => x.id === id);
+    if (!l) return;
+    lightDragRef.current = { id };
+    setLightDrag({ id, x: l.x, y: l.y });
+  }, [currentScene]);
   /** Canvas click on a door: toggle open/closed (locked doors don't budge). */
   const toggleDoorOpen = useCallback((id: string) => {
     const w = wallById(id);
@@ -1772,6 +1895,10 @@ export default function MapBoard() {
       </button>
     );
   };
+
+  const sceneHistory = currentSceneId ? history[currentSceneId] : undefined;
+  const canUndo = !!sceneHistory && sceneHistory.undo.length > 0;
+  const canRedo = !!sceneHistory && sceneHistory.redo.length > 0;
 
   // Cursor: space = grab (pan mode), drawing tools = crosshair, otherwise
   // default. Layers tool gets default cursor — the layer itself owns its
@@ -1975,12 +2102,57 @@ export default function MapBoard() {
               </div>
             )}
 
+            {/* Ruler sub-mode: plain distance vs. narrative range bands. */}
+            {panelTab === 'select' && tool === 'ruler' && (
+              <div className="mt-2">
+                <div className="flex rounded overflow-hidden border border-slate-800">
+                  {([['distance', 'Distance'], ['range', 'Range bands']] as const).map(([m, label]) => (
+                    <button
+                      key={m}
+                      onClick={() => { setRulerMode(m); setRuler(null); }}
+                      className={`flex-1 py-1 text-[11px] ${
+                        rulerMode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-1 text-[10px] text-slate-600">
+                  {rulerMode === 'range'
+                    ? 'Click to drop range rings (very close / close / far / very far).'
+                    : 'Click to start measuring; click again to clear.'}
+                </div>
+              </div>
+            )}
+
             {/* Shapes tab: AoE sub-tools (colour picker lives in its own panel below). */}
             {panelTab === 'shapes' && isGM && (
               <div className="mt-2 grid grid-cols-3 gap-1">
                 {toolButton('circle', CircleIcon, 'Circle AoE', true)}
                 {toolButton('square', SquareIcon, 'Square AoE', true)}
                 {toolButton('cone', Triangle, 'Cone AoE', true)}
+              </div>
+            )}
+
+            {isGM && (
+              <div className="flex gap-1 mt-2">
+                <button
+                  onClick={() => currentSceneId && void undo(currentSceneId)}
+                  disabled={!canUndo}
+                  title="Undo (Ctrl/Cmd+Z)"
+                  className="flex-1 py-1.5 rounded border text-xs flex items-center justify-center gap-1 bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Undo2 size={13} /> Undo
+                </button>
+                <button
+                  onClick={() => currentSceneId && void redo(currentSceneId)}
+                  disabled={!canRedo}
+                  title="Redo (Ctrl/Cmd+Shift+Z)"
+                  className="flex-1 py-1.5 rounded border text-xs flex items-center justify-center gap-1 bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Redo2 size={13} /> Redo
+                </button>
               </div>
             )}
 
@@ -2308,10 +2480,30 @@ export default function MapBoard() {
                 })}
               </div>
 
+              {/* Snap-to-grid vs freehand (drawing + vertex editing) */}
+              {!doorEditMode && (
+                <div className="flex rounded overflow-hidden border border-slate-800">
+                  {([['snap', 'Snap to grid'], ['free', 'Freehand']] as const).map(([m, label]) => {
+                    const on = m === 'free' ? !wallSnap : wallSnap;
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => setWallSnap(m === 'snap')}
+                        className={`flex-1 py-1 text-[11px] ${
+                          on ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="text-[11px] text-slate-500">
                 {doorEditMode
                   ? 'Click a wall to turn it into a doorway; click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
-                  : 'Drag to draw a wall (snaps to the grid). Drag a yellow vertex to reshape it; drag a segment’s small midpoint dot to add a bend; alt/right-click a vertex to remove it. Double-click a wall to delete. Players never see plain walls — only their effect on line of sight.'}
+                  : `Drag to draw a wall (${wallSnap ? 'snaps to the grid' : 'freehand'}). Click a wall to select it — Ctrl/Cmd+C / V to copy/paste, Delete to remove. Drag a yellow vertex to reshape; drag a segment’s midpoint dot to add a bend; alt/right-click a vertex to remove it. Double-click a wall to delete.`}
               </div>
 
               {/* Per-door controls */}
@@ -2572,7 +2764,14 @@ export default function MapBoard() {
           {mapError && (
             <div className="flex items-start gap-1.5 text-[11px] text-rose-400 bg-rose-950/30 border border-rose-800/50 rounded p-2">
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
-              <span>{mapError}</span>
+              <span className="flex-1 break-words">{mapError}</span>
+              <button
+                onClick={() => useMap.setState({ error: null })}
+                title="Dismiss"
+                className="shrink-0 text-rose-500 hover:text-rose-200"
+              >
+                <X size={12} />
+              </button>
             </div>
           )}
         </aside>
@@ -2580,7 +2779,7 @@ export default function MapBoard() {
         {/* ── Canvas ─────────────────────────────────────────────────────── */}
         <div className="flex-1 min-w-0 relative bg-slate-950 overflow-hidden">
           {/* Ruler readout */}
-          {ruler && tool === 'ruler' && (
+          {ruler && tool === 'ruler' && rulerMode === 'distance' && (
             <div
               className="absolute top-3 left-3 z-10 px-3 py-1.5 bg-slate-950/80 border border-slate-700 rounded font-mono text-xs"
               style={{ color: 'var(--ac-200)' }}
@@ -2685,7 +2884,7 @@ export default function MapBoard() {
 
               {/* Ruler — uses the viewer's dashboard accent so each player
                   sees their own colour for measurements. */}
-              {ruler && tool === 'ruler' && (
+              {ruler && tool === 'ruler' && rulerMode === 'distance' && (
                 <g pointerEvents="none">
                   <line
                     x1={ruler.x1} y1={ruler.y1} x2={ruler.x2} y2={ruler.y2}
@@ -2693,6 +2892,36 @@ export default function MapBoard() {
                   />
                   <circle cx={ruler.x1} cy={ruler.y1} r={4 / zoom} fill="var(--ac-400)" />
                   <circle cx={ruler.x2} cy={ruler.y2} r={4 / zoom} fill="var(--ac-400)" />
+                </g>
+              )}
+
+              {/* Range bands: concentric reach rings around a dropped origin. */}
+              {ruler && tool === 'ruler' && rulerMode === 'range' && (
+                <g pointerEvents="none">
+                  {[...RANGE_BANDS].reverse().map((b) => {
+                    const rr = (b.ft / 5) * mapGridSize;
+                    return (
+                      <g key={b.label}>
+                        <circle
+                          cx={ruler.x1} cy={ruler.y1} r={rr}
+                          fill={b.color} fillOpacity={0.05}
+                          stroke={b.color} strokeOpacity={0.7}
+                          strokeWidth={1.5 / zoom}
+                          strokeDasharray={`${5 / zoom} ${4 / zoom}`}
+                        />
+                        <text
+                          x={ruler.x1} y={ruler.y1 - rr - 3 / zoom}
+                          textAnchor="middle"
+                          fontSize={11 / zoom}
+                          fill={b.color}
+                          stroke="#020617" strokeWidth={3 / zoom} paintOrder="stroke"
+                        >
+                          {b.label} · {b.ft} ft
+                        </text>
+                      </g>
+                    );
+                  })}
+                  <circle cx={ruler.x1} cy={ruler.y1} r={4 / zoom} fill="var(--ac-400)" />
                 </g>
               )}
 
@@ -2735,6 +2964,9 @@ export default function MapBoard() {
                   lights={currentScene.lights}
                   zoom={zoom}
                   onRemoveLight={currentSceneId ? (id) => void removeLight(currentSceneId, id) : undefined}
+                  onLightDown={onLightDown}
+                  dragId={lightDrag?.id ?? null}
+                  dragPos={lightDrag}
                 />
               )}
 
@@ -2752,7 +2984,12 @@ export default function MapBoard() {
                   onVertexDown={onVertexDown}
                   onSegmentInsert={onSegmentInsert}
                   onVertexRemove={onVertexRemove}
-                  onWallClick={doorEditMode && panelTab === 'walls' ? (id) => setWallIsDoor(id, true) : undefined}
+                  onWallClick={
+                    doorEditMode && panelTab === 'walls'
+                      ? (id) => setWallIsDoor(id, true)
+                      : (id) => setSelection({ kind: 'wall', id })
+                  }
+                  selectedId={selection?.kind === 'wall' ? selection.id : null}
                 />
               )}
 

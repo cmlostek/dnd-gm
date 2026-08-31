@@ -24,6 +24,7 @@ export default function WallsLayer({
   onVertexDown,
   onSegmentInsert,
   onVertexRemove,
+  selectedId,
 }: {
   walls: MapWall[];
   zoom: number;
@@ -40,6 +41,8 @@ export default function WallsLayer({
   onSegmentInsert?: (wall: MapWall, segIndex: number) => void;
   /** Delete vertex `index` (alt- or right-click a vertex handle). */
   onVertexRemove?: (wall: MapWall, index: number) => void;
+  /** Id of the currently-selected wall (drawn with a highlight). */
+  selectedId?: string | null;
 }) {
   const stroke = 3 / zoom;
   const dot = 4 / zoom;
@@ -49,8 +52,22 @@ export default function WallsLayer({
     <g>
       {walls.map((w) => {
         const pts = wallPoints(w);
+        const selected = selectedId === w.id;
         return (
           <g key={w.id}>
+            {/* Selection glow underlay. */}
+            {selected && (
+              <path
+                d={wallPath(w)}
+                fill="none"
+                stroke="#38bdf8"
+                strokeWidth={stroke * 3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeOpacity={0.4}
+                pointerEvents="none"
+              />
+            )}
             {/* Fat invisible hit path for easy double-click delete / door click. */}
             <path
               d={wallPath(w)}

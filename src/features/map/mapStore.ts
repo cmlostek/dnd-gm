@@ -352,7 +352,68 @@ type MapStore = {
   addToken: (campaignId: string, t: Omit<MapToken, 'id'>) => Promise<string | null>;
   updateToken: (id: string, patch: Partial<MapToken>, fromSync?: boolean) => Promise<void>;
   removeToken: (id: string) => Promise<void>;
+
+  // ── Undo / redo (GM scene-data edits: walls, shapes, lights, layers) ──────
+  /** Per-scene undo/redo stacks of scene-data snapshots. */
+  history: Record<string, { undo: SceneData[]; redo: SceneData[] }>;
+  /** Snapshot the scene's current data before an edit (clears redo). Called at
+   *  the top of the discrete editing actions below. */
+  recordHistory: (sceneId: string) => void;
+  undo: (sceneId: string) => Promise<void>;
+  redo: (sceneId: string) => Promise<void>;
 };
+
+/** Human-readable message from any thrown value. Supabase/PostgREST errors are
+ *  plain objects (not Error instances), so a naive String(e) yields the useless
+ *  "[object Object]" — pull their .message/.details/.hint instead. */
+function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === 'object') {
+    const o = e as Record<string, unknown>;
+    const parts = [o.message, o.details, o.hint].filter((x): x is string => typeof x === 'string' && x.length > 0);
+    if (parts.length) return parts.join(' — ');
+    if (typeof o.error_description === 'string') return o.error_description;
+    try { return JSON.stringify(e); } catch { return 'Unknown error'; }
+  }
+  return String(e);
+}
+
+const HISTORY_CAP = 60;
+
+/**
+ * Snapshot a scene's editable data for the undo/redo stacks. Arrays are copied
+ * so later edits don't mutate the snapshot, but element objects are SHARED by
+ * reference — the store always replaces elements rather than mutating them in
+ * place, so this stays correct while avoiding duplicating large image data-URLs
+ * held in layers across dozens of history entries.
+ */
+function snapshotSceneData(scene: MapScene): SceneData {
+  return {
+    shapes: [...scene.shapes],
+    layers: [...scene.layers],
+    fog: { ...scene.fog, revealed: [...scene.fog.revealed], explored: [...scene.fog.explored] },
+    walls: [...scene.walls],
+    lights: [...scene.lights],
+  };
+}
+
+/** Overlay a data snapshot back onto a scene (restores every editable field). */
+function applySceneData(scene: MapScene, d: SceneData): MapScene {
+  return {
+    ...scene,
+    shapes: d.shapes ?? [],
+    layers: d.layers ?? [],
+    fog: d.fog ?? scene.fog,
+    walls: d.walls ?? [],
+    lights: d.lights ?? [],
+  };
+}
+
+/** Persist just the data column of a scene (used by undo/redo). */
+async function persistSceneData(sceneId: string, data: SceneData) {
+  const { error } = await supabase.from('map_scenes').update({ data }).eq('id', sceneId);
+  if (error) throw error;
+}
 
 // Mutate a scene's data jsonb safely — fetches current data, applies the
 // mutation, writes the merged result so realtime echoes back the correct
@@ -389,6 +450,59 @@ export const useMap = create<MapStore>((set, get) => ({
   tokens: [],
   loaded: false,
   error: null,
+  history: {},
+
+  recordHistory: (sceneId) => {
+    const scene = get().scenes.find((s) => s.id === sceneId);
+    if (!scene) return;
+    const snap = snapshotSceneData(scene);
+    set((st) => {
+      const h = st.history[sceneId] ?? { undo: [], redo: [] };
+      return {
+        history: {
+          ...st.history,
+          // A fresh edit invalidates the redo branch.
+          [sceneId]: { undo: [...h.undo, snap].slice(-HISTORY_CAP), redo: [] },
+        },
+      };
+    });
+  },
+
+  undo: async (sceneId) => {
+    const st = get();
+    const h = st.history[sceneId];
+    const scene = st.scenes.find((s) => s.id === sceneId);
+    if (!h || h.undo.length === 0 || !scene) return;
+    const prev = h.undo[h.undo.length - 1];
+    const current = snapshotSceneData(scene);
+    set((s) => ({
+      scenes: s.scenes.map((sc) => (sc.id === sceneId ? applySceneData(sc, prev) : sc)),
+      history: {
+        ...s.history,
+        [sceneId]: { undo: h.undo.slice(0, -1), redo: [...h.redo, current].slice(-HISTORY_CAP) },
+      },
+    }));
+    try { await persistSceneData(sceneId, prev); }
+    catch (e) { set({ error: e instanceof Error ? e.message : 'Undo failed' }); }
+  },
+
+  redo: async (sceneId) => {
+    const st = get();
+    const h = st.history[sceneId];
+    const scene = st.scenes.find((s) => s.id === sceneId);
+    if (!h || h.redo.length === 0 || !scene) return;
+    const next = h.redo[h.redo.length - 1];
+    const current = snapshotSceneData(scene);
+    set((s) => ({
+      scenes: s.scenes.map((sc) => (sc.id === sceneId ? applySceneData(sc, next) : sc)),
+      history: {
+        ...s.history,
+        [sceneId]: { undo: [...h.undo, current].slice(-HISTORY_CAP), redo: h.redo.slice(0, -1) },
+      },
+    }));
+    try { await persistSceneData(sceneId, next); }
+    catch (e) { set({ error: e instanceof Error ? e.message : 'Redo failed' }); }
+  },
 
   loadForCampaign: async (campaignId) => {
     set({ loaded: false, error: null });
@@ -423,9 +537,10 @@ export const useMap = create<MapStore>((set, get) => ({
         scenes,
         tokens,
         loaded: true,
+        history: {},
       });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e), loaded: true });
+      set({ error: errMsg(e), loaded: true });
     }
   },
 
@@ -501,7 +616,7 @@ export const useMap = create<MapStore>((set, get) => ({
     };
   },
 
-  clear: () => set({ state: DEFAULT_STATE, scenes: [], tokens: [], loaded: false, error: null }),
+  clear: () => set({ state: DEFAULT_STATE, scenes: [], tokens: [], loaded: false, error: null, history: {} }),
 
   // ── Scenes ──────────────────────────────────────────────────────────────
   addScene: async (campaignId, name) => {
@@ -635,6 +750,7 @@ export const useMap = create<MapStore>((set, get) => ({
 
   // ── Image layers ────────────────────────────────────────────────────────
   addLayer: async (sceneId, layer) => {
+    get().recordHistory(sceneId);
     const id = crypto.randomUUID();
     const full: ImageLayer = { id, ...layer };
     const prev = get().scenes;
@@ -645,12 +761,13 @@ export const useMap = create<MapStore>((set, get) => ({
       await mutateSceneData(sceneId, (s) => ({ layers: [...s.layers, full] }));
       return id;
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
       return null;
     }
   },
 
   updateLayer: async (sceneId, layer) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -664,11 +781,12 @@ export const useMap = create<MapStore>((set, get) => ({
         layers: s.layers.map((l) => (l.id === layer.id ? layer : l)),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeLayer: async (sceneId, layerId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -680,12 +798,13 @@ export const useMap = create<MapStore>((set, get) => ({
         layers: s.layers.filter((l) => l.id !== layerId),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   // ── Shapes ──────────────────────────────────────────────────────────────
   addShape: async (sceneId, shape) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -695,11 +814,12 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ shapes: [...s.shapes, shape] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   updateShape: async (sceneId, shape) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -713,11 +833,12 @@ export const useMap = create<MapStore>((set, get) => ({
         shapes: s.shapes.map((x) => (x.id === shape.id ? shape : x)),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeShape: async (sceneId, shapeId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -729,11 +850,12 @@ export const useMap = create<MapStore>((set, get) => ({
         shapes: s.shapes.filter((x) => x.id !== shapeId),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   clearShapes: async (sceneId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) => (s.id === sceneId ? { ...s, shapes: [] } : s)),
@@ -741,89 +863,97 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, () => ({ shapes: [] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   // ── Walls ───────────────────────────────────────────────────────────────
   addWall: async (sceneId, wall) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [...s.walls, wall] } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: [...s.walls, wall] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   updateWall: async (sceneId, wall) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeWall: async (sceneId, wallId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.filter((w) => w.id !== wallId) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: s.walls.filter((w) => w.id !== wallId) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   clearWalls: async (sceneId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [] } : s)) });
     try {
       await mutateSceneData(sceneId, () => ({ walls: [] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   // ── Lights ───────────────────────────────────────────────────────────────
   addLight: async (sceneId, light) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: [...s.lights, light] } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ lights: [...s.lights, light] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   updateLight: async (sceneId, light) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: s.lights.map((l) => (l.id === light.id ? light : l)) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ lights: s.lights.map((l) => (l.id === light.id ? light : l)) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeLight: async (sceneId, lightId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: s.lights.filter((l) => l.id !== lightId) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ lights: s.lights.filter((l) => l.id !== lightId) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   clearLights: async (sceneId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: [] } : s)) });
     try {
       await mutateSceneData(sceneId, () => ({ lights: [] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -833,7 +963,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, ambientDark: dark } }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -852,7 +982,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: apply(s) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -862,7 +992,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, mode } }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -885,7 +1015,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, () => ({ fog }));
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: errMsg(e) });
     }
   },
 
@@ -895,7 +1025,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, revealed: [], explored: [] } }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -911,7 +1041,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, explored } }));
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: errMsg(e) });
     }
   },
 
