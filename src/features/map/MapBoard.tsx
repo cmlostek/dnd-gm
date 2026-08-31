@@ -584,7 +584,14 @@ export default function MapBoard() {
   // Which controls tab is showing in the sidebar, and (within the Walls tab)
   // whether clicking a wall converts it to/from a doorway.
   const [panelTab, setPanelTab] = useState<PanelTab>('select');
-  const [doorEditMode, setDoorEditMode] = useState(false);
+  // Walls-tab sub-mode: draw new walls, connect two vertices, or edit doors.
+  const [wallMode, setWallMode] = useState<'draw' | 'connect' | 'doors'>('draw');
+  const doorEditMode = wallMode === 'doors';
+  const connectMode = wallMode === 'connect';
+  // First-picked vertex while connecting two points (its logical position), and
+  // the live cursor for the rubber-band preview to the second point.
+  const [connectAnchor, setConnectAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [connectCursor, setConnectCursor] = useState<{ x: number; y: number } | null>(null);
   // Hovered doorway → styled tooltip (name + state), positioned at the cursor.
   const [doorHover, setDoorHover] = useState<DoorHover | null>(null);
   // Wall drawing/editing: snap vertices to the grid, or place them freehand.
@@ -823,6 +830,7 @@ export default function MapBoard() {
       const t = e.target;
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
       if (e.key === 'Escape') {
+        if (connectAnchor) { setConnectAnchor(null); return; }
         if (wallExtend) { setWallExtend(null); return; }
         if (selection) { setSelection(null); return; }
       }
@@ -883,12 +891,14 @@ export default function MapBoard() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isGM, currentSceneId, undo, redo, selection, wallExtend, addWall, removeWall, removeShape]);
+  }, [isGM, currentSceneId, undo, redo, selection, wallExtend, connectAnchor, addWall, removeWall, removeShape]);
 
-  // Leaving wall-draw mode cancels any in-progress extension.
+  // Leaving wall-draw mode cancels an in-progress extension; leaving Connect
+  // mode drops the pending connection anchor.
   useEffect(() => {
-    if (tool !== 'wall' || doorEditMode) setWallExtend(null);
-  }, [tool, doorEditMode]);
+    if (tool !== 'wall' || wallMode !== 'draw') setWallExtend(null);
+    if (tool !== 'wall' || wallMode !== 'connect') { setConnectAnchor(null); setConnectCursor(null); }
+  }, [tool, wallMode]);
 
   // ── Fit content to screen ────────────────────────────────────────────────
   // Fits the bounding box of the canvas border PLUS every visible image
@@ -1476,6 +1486,12 @@ export default function MapBoard() {
       return;
     }
     if (tool === 'wall') {
+      // Connect/Doors modes act only on wall/vertex clicks (handled by their
+      // own layers); an empty-space click just clears a pending connection.
+      if (wallMode !== 'draw') {
+        if (wallMode === 'connect') setConnectAnchor(null);
+        return;
+      }
       const g = mapGridSize || 50;
       // Starting on (or near) an existing wall's endpoint continues THAT wall
       // rather than drawing a new one — so you don't have to hit the tiny
@@ -1514,6 +1530,10 @@ export default function MapBoard() {
       const c = wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y };
       setWallExtend({ ...wallExtend, cursor: c });
       return;
+    }
+
+    if (connectMode && connectAnchor) {
+      setConnectCursor({ x: p.x, y: p.y });
     }
 
     if (wallEditRef.current && wallBend) {
@@ -1834,13 +1854,26 @@ export default function MapBoard() {
     () => weldedWallSegments((walls ?? []).filter((w) => !(w.door && w.door.open)), (mapGridSize || 50) * 0.5),
     [walls, mapGridSize],
   );
-  // Press a vertex: pending until we know if it's a drag (move) or a click
+  // Press a vertex. In Connect mode, clicking two vertices joins them with a new
+  // wall. Otherwise it's pending until we know if it's a drag (move) or a click
   // (start extending the wall from that vertex — see onMouseUp).
   const onVertexDown = useCallback((wall: MapWall, index: number, e: React.MouseEvent) => {
+    if (connectMode) {
+      const vp = wallPoints(wall)[index];
+      if (!connectAnchor) {
+        setConnectAnchor({ x: vp.x, y: vp.y });
+      } else {
+        if ((connectAnchor.x !== vp.x || connectAnchor.y !== vp.y) && currentSceneId) {
+          void addWall(currentSceneId, { id: uid(), x1: connectAnchor.x, y1: connectAnchor.y, x2: vp.x, y2: vp.y });
+        }
+        setConnectAnchor(null);
+      }
+      return;
+    }
     wallEditRef.current = { index, sx: e.clientX, sy: e.clientY, moved: false };
     setWallExtend(null);
     setWallBend(wall);
-  }, []);
+  }, [connectMode, connectAnchor, currentSceneId, addWall]);
   // Click (not drag) on an endpoint vertex → start a connected extension from it.
   const startExtend = useCallback((wall: MapWall, index: number) => {
     const pts = wallPoints(wall);
@@ -2627,26 +2660,23 @@ export default function MapBoard() {
                 </span>
               </div>
 
-              {/* Draw walls vs. assign doorways */}
+              {/* Draw walls · connect vertices · assign doorways */}
               <div className="flex rounded overflow-hidden border border-slate-800">
-                {([['draw', 'Draw walls'], ['doors', 'Edit doors']] as const).map(([m, label]) => {
-                  const on = m === 'doors' ? doorEditMode : !doorEditMode;
-                  return (
-                    <button
-                      key={m}
-                      onClick={() => setDoorEditMode(m === 'doors')}
-                      className={`flex-1 py-1 text-[11px] ${
-                        on ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
+                {([['draw', 'Draw'], ['connect', 'Connect'], ['doors', 'Doors']] as const).map(([m, label]) => (
+                  <button
+                    key={m}
+                    onClick={() => { setWallMode(m); setConnectAnchor(null); }}
+                    className={`flex-1 py-1 text-[11px] ${
+                      wallMode === m ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
 
               {/* Snap-to-grid vs freehand (drawing + vertex editing) */}
-              {!doorEditMode && (
+              {wallMode === 'draw' && (
                 <div className="flex rounded overflow-hidden border border-slate-800">
                   {([['snap', 'Snap to grid'], ['free', 'Freehand']] as const).map(([m, label]) => {
                     const on = m === 'free' ? !wallSnap : wallSnap;
@@ -2668,9 +2698,13 @@ export default function MapBoard() {
               <div className="text-[11px] text-slate-500">
                 {doorEditMode
                   ? 'Click a wall segment to turn just that segment into a doorway (the rest stays a wall); click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
-                  : wallExtend
-                    ? 'Extending: click to drop each connected point; right-click or Esc to finish.'
-                    : `Drag to draw a wall (${wallSnap ? 'snaps to the grid' : 'freehand'}). Click an end vertex to continue the wall from it (drag a vertex to move). Drag a segment’s midpoint dot to add a bend; alt/right-click a vertex to remove it. Click a wall to select (Ctrl/Cmd+C/V copy-paste, Delete removes); double-click to delete.`}
+                  : connectMode
+                    ? (connectAnchor
+                        ? 'Now click a second yellow vertex to connect them. Esc to cancel.'
+                        : 'Click any two yellow vertices to join them with a new wall.')
+                    : wallExtend
+                      ? 'Extending: click to drop each connected point; right-click or Esc to finish.'
+                      : `Drag to draw a wall (${wallSnap ? 'snaps to the grid' : 'freehand'}). Click an end vertex to continue the wall from it (drag a vertex to move). Drag a segment’s midpoint dot to add a bend; alt/right-click a vertex to remove it. Click a wall to select (Ctrl/Cmd+C/V copy-paste, Delete removes); double-click to delete.`}
               </div>
 
               {/* Per-door controls */}
@@ -3191,6 +3225,23 @@ export default function MapBoard() {
                   </g>
                 );
               })()}
+
+              {/* Connect mode: highlight the first picked vertex + rubber-band. */}
+              {isGM && connectMode && connectAnchor && (
+                <g pointerEvents="none">
+                  {connectCursor && (
+                    <line
+                      x1={connectAnchor.x} y1={connectAnchor.y} x2={connectCursor.x} y2={connectCursor.y}
+                      stroke="#38bdf8" strokeWidth={3 / zoom} strokeLinecap="round"
+                      strokeDasharray={`${6 / zoom} ${4 / zoom}`}
+                    />
+                  )}
+                  <circle
+                    cx={connectAnchor.x} cy={connectAnchor.y} r={6 / zoom}
+                    fill="none" stroke="#38bdf8" strokeWidth={2 / zoom}
+                  />
+                </g>
+              )}
 
               {/* Doorways — visible to everyone (players see state + pass through
                   open doors). GM clicking a door toggles open/closed, or removes
