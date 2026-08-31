@@ -9,8 +9,47 @@
 
 import type { Seg, Vec } from './visibility';
 
-/** A wall as authored: endpoints plus an optional bezier control point. */
-export type CurveWall = { x1: number; y1: number; x2: number; y2: number; cx?: number; cy?: number };
+/**
+ * A wall as authored. Two representations, in priority order:
+ *  - `points`: a polyline through ≥2 vertices (straight segments between them).
+ *    This is what multi-point walls use; `x1/y1/x2/y2` mirror the first/last
+ *    vertex for any legacy reader.
+ *  - otherwise the legacy single segment (x1,y1)→(x2,y2), optionally bowed into
+ *    a quadratic arc by a control point `cx/cy`.
+ */
+export type CurveWall = {
+  x1: number; y1: number; x2: number; y2: number;
+  cx?: number; cy?: number;
+  points?: Vec[];
+};
+
+/** True when the wall is a multi-point polyline (≥2 explicit vertices). */
+export function isPolyline(w: CurveWall): w is CurveWall & { points: Vec[] } {
+  return Array.isArray(w.points) && w.points.length >= 2;
+}
+
+/**
+ * Return a copy of `w` reshaped to the given vertices, keeping x1/y1/x2/y2 in
+ * sync with the first/last point. Two points collapse back to a plain straight
+ * segment (no `points`/arc); three or more store a polyline. Extra fields (id,
+ * door, …) are preserved. Cleared fields are set to undefined so they drop out
+ * of the JSON persisted to the scene.
+ */
+export function withWallPoints<T extends CurveWall>(w: T, pts: Vec[]): T {
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const out = { ...w, x1: first.x, y1: first.y, x2: last.x, y2: last.y, cx: undefined, cy: undefined } as T;
+  out.points = pts.length > 2 ? pts : undefined;
+  return out;
+}
+
+/** The wall's editable vertices — its polyline points, or the two endpoints of
+ *  a legacy segment. (A legacy arc is treated as its two endpoints for editing;
+ *  bending it produces a polyline.) */
+export function wallPoints(w: CurveWall): Vec[] {
+  if (isPolyline(w)) return w.points;
+  return [{ x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 }];
+}
 
 /** How finely a curved wall is sampled for sight/collision. */
 export const WALL_CURVE_STEPS = 14;
@@ -26,8 +65,18 @@ export function isStraightWall(w: CurveWall): boolean {
   return Math.abs(w.cx - mx) < 0.5 && Math.abs(w.cy - my) < 0.5;
 }
 
+/** Straight segments between consecutive polyline vertices. */
+function polylineSegments(pts: Vec[]): Seg[] {
+  const segs: Seg[] = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    segs.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y });
+  }
+  return segs;
+}
+
 /** Sample a wall into straight segments (one for a straight wall). */
 export function tessellateWall(w: CurveWall, steps = WALL_CURVE_STEPS): Seg[] {
+  if (isPolyline(w)) return polylineSegments(w.points);
   if (isStraightWall(w)) return [{ x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 }];
   const cx = w.cx as number;
   const cy = w.cy as number;
@@ -52,15 +101,24 @@ export function wallSegments(walls: CurveWall[]): Seg[] {
   return walls.flatMap((w) => tessellateWall(w));
 }
 
-/** SVG path `d` for a wall — a line, or a quadratic curve if bent. */
+/** SVG path `d` for a wall — a polyline, a straight line, or a quadratic arc. */
 export function wallPath(w: CurveWall): string {
+  if (isPolyline(w)) {
+    return w.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  }
   if (isStraightWall(w)) return `M ${w.x1} ${w.y1} L ${w.x2} ${w.y2}`;
   return `M ${w.x1} ${w.y1} Q ${w.cx} ${w.cy} ${w.x2} ${w.y2}`;
 }
 
-/** The point on the wall's midpoint (t=0.5) — where the bend handle sits. For a
- *  quadratic the curve passes through this, not through the control point. */
+/** A representative midpoint of the wall — the middle of the central segment for
+ *  a polyline, the arc's t=0.5 point for a bezier, else the segment midpoint.
+ *  Used to anchor the door lock badge. */
 export function curveMidpoint(w: CurveWall): Vec {
+  if (isPolyline(w)) {
+    const pts = w.points;
+    const i = Math.floor((pts.length - 1) / 2);
+    return { x: (pts[i].x + pts[i + 1].x) / 2, y: (pts[i].y + pts[i + 1].y) / 2 };
+  }
   if (isStraightWall(w)) return { x: (w.x1 + w.x2) / 2, y: (w.y1 + w.y2) / 2 };
   return {
     x: 0.25 * w.x1 + 0.5 * (w.cx as number) + 0.25 * w.x2,

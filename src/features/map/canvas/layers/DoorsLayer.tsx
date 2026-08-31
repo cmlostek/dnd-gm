@@ -10,17 +10,31 @@ import { wallPath, curveMidpoint } from '../../vision/walls';
  * open/closed (locked doors must be unlocked first, from the Walls panel);
  * players only see and pass through open doors.
  */
+export type DoorHover = {
+  name: string;
+  open: boolean;
+  locked: boolean;
+  /** Screen coordinates of the pointer, for positioning the tooltip. */
+  x: number;
+  y: number;
+};
+
 export default function DoorsLayer({
   doors,
   zoom,
   isGM,
   onToggleOpen,
+  onHover,
+  onHoverEnd,
 }: {
   doors: MapWall[];
   zoom: number;
   isGM: boolean;
   /** GM-only: toggle a door open/closed (ignored for locked doors). */
   onToggleOpen?: (id: string) => void;
+  /** Hover a door — drives the styled tooltip rendered by MapBoard. */
+  onHover?: (h: DoorHover) => void;
+  onHoverEnd?: () => void;
 }) {
   const stroke = 3.5 / zoom;
   const dash = `${7 / zoom} ${5 / zoom}`;
@@ -33,7 +47,8 @@ export default function DoorsLayer({
         if (!d) return null;
         const mid = curveMidpoint(w);
         const color = d.locked ? '#f87171' : d.open ? '#4ade80' : '#fbbf24';
-        const label = `${d.name?.trim() || 'Door'} — ${d.locked ? 'Locked' : d.open ? 'Open' : 'Closed'}`;
+        const hover = (e: React.MouseEvent) =>
+          onHover?.({ name: d.name?.trim() || 'Door', open: d.open, locked: d.locked, x: e.clientX, y: e.clientY });
         const clickable = isGM && !!onToggleOpen && !d.locked;
         return (
           <g key={w.id}>
@@ -47,9 +62,10 @@ export default function DoorsLayer({
               strokeLinecap="round"
               style={{ cursor: clickable ? 'pointer' : 'default' }}
               onClick={clickable ? () => onToggleOpen!(w.id) : undefined}
-            >
-              <title>{label}</title>
-            </path>
+              onMouseEnter={hover}
+              onMouseMove={hover}
+              onMouseLeave={() => onHoverEnd?.()}
+            />
             <path
               d={wallPath(w)}
               fill="none"

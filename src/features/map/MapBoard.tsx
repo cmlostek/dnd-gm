@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useMap, MAX_DAMAGE_LOG, type DamageLogEntry, type MapShape, type MapToken, type MapScene } from './mapStore';
 import GridLayer from './canvas/layers/GridLayer';
@@ -8,11 +9,11 @@ import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
 import FogLayer from './canvas/layers/FogLayer';
 import WallsLayer from './canvas/layers/WallsLayer';
-import DoorsLayer from './canvas/layers/DoorsLayer';
+import DoorsLayer, { type DoorHover } from './canvas/layers/DoorsLayer';
 import LightsLayer from './canvas/layers/LightsLayer';
 import type { LightArea } from './canvas/layers/FogLayer';
 import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
-import { wallSegments, curveMidpoint, controlThroughMidpoint, resolveMovement } from './vision/walls';
+import { wallSegments, wallPoints, withWallPoints, resolveMovement } from './vision/walls';
 import { DEFAULT_LIGHT_RADIUS, type MapWall } from './mapStore';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
@@ -529,7 +530,8 @@ export default function MapBoard() {
   // Wall bend drag — the live-preview wall while dragging its midpoint handle
   // into a curve. Committed to the store (updateWall) on mouse-up.
   const [wallBend, setWallBend] = useState<MapWall | null>(null);
-  const wallBendRef = useRef(false);
+  // While dragging a wall vertex, which point of the draft is moving.
+  const wallEditRef = useRef<{ index: number } | null>(null);
   // Shape drag state — { id, ox, oy } where ox/oy are the offsets from the
   // shape's anchor to the mouse-down point, so the shape doesn't snap to
   // the cursor on grab.
@@ -552,6 +554,8 @@ export default function MapBoard() {
   // whether clicking a wall converts it to/from a doorway.
   const [panelTab, setPanelTab] = useState<PanelTab>('select');
   const [doorEditMode, setDoorEditMode] = useState(false);
+  // Hovered doorway → styled tooltip (name + state), positioned at the cursor.
+  const [doorHover, setDoorHover] = useState<DoorHover | null>(null);
   const [tokenName, setTokenName] = useState('');
   const [tokenEmoji, setTokenEmoji] = useState('');
   // Optional creature template — when set, the next placed token seeds
@@ -1300,10 +1304,15 @@ export default function MapBoard() {
 
     const p = screenToLogical(e);
 
-    if (wallBendRef.current && wallBend) {
-      // Drag the midpoint handle: bend the curve to pass through the cursor.
-      const { cx, cy } = controlThroughMidpoint(wallBend, p);
-      setWallBend({ ...wallBend, cx, cy });
+    if (wallEditRef.current && wallBend) {
+      // Drag a vertex to the (grid-snapped) cursor and keep the endpoints in
+      // sync with the first/last point.
+      const g = mapGridSize || 50;
+      const idx = wallEditRef.current.index;
+      const pts = wallPoints(wallBend).map((pt, i) =>
+        i === idx ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : pt,
+      );
+      setWallBend(withWallPoints(wallBend, pts));
       return;
     }
 
@@ -1393,8 +1402,8 @@ export default function MapBoard() {
       isPanningRef.current = false;
       return;
     }
-    if (wallBendRef.current) {
-      wallBendRef.current = false;
+    if (wallEditRef.current) {
+      wallEditRef.current = null;
       if (wallBend && currentSceneId) void updateWall(currentSceneId, wallBend);
       setWallBend(null);
       return;
@@ -1576,11 +1585,31 @@ export default function MapBoard() {
     () => wallSegments((walls ?? []).filter((w) => !(w.door && w.door.open))),
     [walls],
   );
-  // Begin dragging a wall's midpoint handle to bend it into a curve.
-  const onBendStart = useCallback((wall: MapWall) => {
-    wallBendRef.current = true;
+  // Begin dragging an existing vertex of a wall.
+  const onVertexDown = useCallback((wall: MapWall, index: number) => {
+    wallEditRef.current = { index };
     setWallBend(wall);
   }, []);
+  // Drag a segment's midpoint handle: insert a new vertex there and drag it,
+  // turning the wall into (or extending) a polyline. `segIndex` is the segment
+  // between vertex segIndex and segIndex+1.
+  const onSegmentInsert = useCallback((wall: MapWall, segIndex: number) => {
+    const pts = wallPoints(wall);
+    const a = pts[segIndex];
+    const b = pts[segIndex + 1];
+    if (!a || !b) return;
+    const at = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const next = [...pts.slice(0, segIndex + 1), at, ...pts.slice(segIndex + 1)];
+    wallEditRef.current = { index: segIndex + 1 };
+    setWallBend(withWallPoints(wall, next));
+  }, []);
+  // Remove a vertex (alt/right-click); no-op if it would leave fewer than two.
+  const onVertexRemove = useCallback((wall: MapWall, index: number) => {
+    if (!currentSceneId) return;
+    const pts = wallPoints(wall);
+    if (pts.length <= 2) return;
+    void updateWall(currentSceneId, withWallPoints(wall, pts.filter((_, i) => i !== index)));
+  }, [currentSceneId, updateWall]);
 
   // ── Doorway helpers (GM only; map_scenes is GM-writable) ──────────────────
   const wallById = useCallback(
@@ -2282,7 +2311,7 @@ export default function MapBoard() {
               <div className="text-[11px] text-slate-500">
                 {doorEditMode
                   ? 'Click a wall to turn it into a doorway; click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
-                  : 'Drag to draw a sight-blocking wall (snaps to the grid). Double-click a wall to delete. Players never see plain walls — only their effect on line of sight.'}
+                  : 'Drag to draw a wall (snaps to the grid). Drag a yellow vertex to reshape it; drag a segment’s small midpoint dot to add a bend; alt/right-click a vertex to remove it. Double-click a wall to delete. Players never see plain walls — only their effect on line of sight.'}
               </div>
 
               {/* Per-door controls */}
@@ -2716,11 +2745,13 @@ export default function MapBoard() {
                     ? plainWalls.map((w) => (w.id === wallBend.id ? wallBend : w))
                     : plainWalls}
                   zoom={zoom}
-                  showHandles={tool === 'wall'}
+                  showHandles={tool === 'wall' && !doorEditMode}
                   draftStart={tool === 'wall' ? drafting : null}
                   draftEnd={tool === 'wall' ? draftEnd : null}
                   onRemoveWall={currentSceneId ? (id) => void removeWall(currentSceneId, id) : undefined}
-                  onBendStart={onBendStart}
+                  onVertexDown={onVertexDown}
+                  onSegmentInsert={onSegmentInsert}
+                  onVertexRemove={onVertexRemove}
                   onWallClick={doorEditMode && panelTab === 'walls' ? (id) => setWallIsDoor(id, true) : undefined}
                 />
               )}
@@ -2738,6 +2769,8 @@ export default function MapBoard() {
                       ? (doorEditMode && panelTab === 'walls' ? (id) => setWallIsDoor(id, false) : toggleDoorOpen)
                       : undefined
                   }
+                  onHover={setDoorHover}
+                  onHoverEnd={() => setDoorHover(null)}
                 />
               )}
 
@@ -2747,6 +2780,30 @@ export default function MapBoard() {
           </svg>
         </div>
       </div>
+
+      {/* Doorway hover card — a small styled tooltip (not the native title box). */}
+      {doorHover && createPortal(
+        (() => {
+          const W = 168;
+          const left = Math.min(doorHover.x + 14, window.innerWidth - W - 8);
+          const top = Math.max(8, doorHover.y - 12);
+          const statusColor = doorHover.locked ? '#fca5a5' : doorHover.open ? '#86efac' : '#fcd34d';
+          const StatusIcon = doorHover.locked ? Lock : doorHover.open ? DoorOpen : DoorClosed;
+          return (
+            <div
+              style={{ position: 'fixed', top, left, width: W, zIndex: 9999, pointerEvents: 'none' }}
+              className="rounded-lg border border-slate-700 bg-slate-900/95 shadow-xl px-3 py-2"
+            >
+              <div className="text-sm font-serif text-slate-100 truncate">{doorHover.name}</div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-[11px]" style={{ color: statusColor }}>
+                <StatusIcon size={12} />
+                {doorHover.locked ? 'Locked' : doorHover.open ? 'Open' : 'Closed'}
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
     </div>
   );
 }

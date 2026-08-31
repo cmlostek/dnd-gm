@@ -136,10 +136,13 @@ export type MapWall = {
   y1: number;
   x2: number;
   y2: number;
-  /** Optional quadratic-bezier control point — bends the wall into an arc.
-   *  Absent or on the midpoint = straight. */
+  /** Optional quadratic-bezier control point — bends a legacy segment into an
+   *  arc. Superseded by `points` for multi-point walls. */
   cx?: number;
   cy?: number;
+  /** Multi-point polyline: straight segments through these ≥2 vertices.
+   *  When present, x1/y1/x2/y2 mirror the first/last vertex. */
+  points?: { x: number; y: number }[];
   /** When set, this wall is a doorway (see MapDoor). Absent = plain wall. */
   door?: MapDoor;
 };
