@@ -13,7 +13,6 @@ import { SharePopover } from './SharePopover';
 import {
   ChevronRight,
   ChevronLeft,
-  FileText,
   Network,
   Folder as FolderIcon,
   FolderPlus,
@@ -25,21 +24,6 @@ import {
   PencilLine,
   Search,
   HelpCircle,
-  Home,
-  Mountain,
-  Flag,
-  Ship,
-  AlertTriangle,
-  Gem,
-  Flame,
-  Swords,
-  Skull,
-  BookOpen,
-  Star,
-  Crown,
-  Compass,
-  Lock,
-  MapPin,
   ArrowUpAZ,
   Clock,
   Palette,
@@ -61,6 +45,8 @@ import {
   List,
   ChevronDown,
   GripVertical,
+  X,
+  Plus,
 } from 'lucide-react';
 import { useVisibilityReload } from '../../hooks/useVisibilityReload';
 import { useCampaignSettings } from './campaignSettingsStore';
@@ -77,89 +63,14 @@ const FOLDER_COLORS = [
   { color: '#94a3b8', label: 'Slate' },
 ] as const;
 
-// ─── Note icon palette ───────────────────────────────────────────────────────
-type NoteIconDef = {
-  id: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  Icon: React.ComponentType<any>;
-  color: string;
-  label: string;
-};
-
-const NOTE_ICONS: NoteIconDef[] = [
-  { id: 'note',      Icon: FileText,      color: '#64748b', label: 'Note' },
-  { id: 'town',      Icon: Home,          color: '#60a5fa', label: 'Town' },
-  { id: 'dungeon',   Icon: Mountain,      color: '#c2863b', label: 'Dungeon' },
-  { id: 'quest',     Icon: Flag,          color: '#f87171', label: 'Quest' },
-  { id: 'travel',    Icon: Ship,          color: '#38bdf8', label: 'Travel' },
-  { id: 'alert',     Icon: AlertTriangle, color: '#fbbf24', label: 'Alert' },
-  { id: 'mystery',   Icon: HelpCircle,    color: '#a78bfa', label: 'Mystery' },
-  { id: 'treasure',  Icon: Gem,           color: '#34d399', label: 'Treasure' },
-  { id: 'danger',    Icon: Flame,         color: '#fb923c', label: 'Danger' },
-  { id: 'combat',    Icon: Swords,        color: '#f472b6', label: 'Combat' },
-  { id: 'death',     Icon: Skull,         color: '#94a3b8', label: 'Death' },
-  { id: 'lore',      Icon: BookOpen,      color: '#c084fc', label: 'Lore' },
-  { id: 'important', Icon: Star,          color: '#facc15', label: 'Important' },
-  { id: 'npc',       Icon: Crown,         color: '#f59e0b', label: 'NPC' },
-  { id: 'explore',   Icon: Compass,       color: '#2dd4bf', label: 'Explore' },
-  { id: 'secret',    Icon: Lock,          color: '#818cf8', label: 'Secret' },
-  { id: 'location',  Icon: MapPin,        color: '#fb7185', label: 'Location' },
-];
-
-function getNoteIconDef(iconId: string | null | undefined): NoteIconDef {
-  return NOTE_ICONS.find((i) => i.id === iconId) ?? NOTE_ICONS[0];
-}
-
-// Palette of selectable tints for note icons. Includes a "default" sentinel
-// so the user can drop their override and fall back to the icon's natural
-// colour from NOTE_ICONS.
-const NOTE_ICON_COLORS: { color: string | null; label: string }[] = [
-  { color: null,       label: 'Default' },
-  { color: '#60a5fa',  label: 'Blue' },
-  { color: '#f87171',  label: 'Red' },
-  { color: '#fbbf24',  label: 'Amber' },
-  { color: '#34d399',  label: 'Green' },
-  { color: '#a78bfa',  label: 'Purple' },
-  { color: '#fb923c',  label: 'Orange' },
-  { color: '#f472b6',  label: 'Pink' },
-  { color: '#94a3b8',  label: 'Slate' },
-  { color: '#facc15',  label: 'Yellow' },
-  { color: '#2dd4bf',  label: 'Teal' },
-  { color: '#fafafa',  label: 'White' },
-];
-
-/** note.icon is stored as either `iconId` (legacy / default colour) or
- *  `iconId|#hex` once the user has picked a custom tint. Both forms round-
- *  trip through this pair so existing data keeps working without a
- *  migration. */
-function parseNoteIcon(stored: string | null | undefined): {
-  id: string | null;
-  color: string | null;
-} {
-  if (!stored) return { id: null, color: null };
-  const pipe = stored.indexOf('|');
-  if (pipe < 0) return { id: stored, color: null };
-  const id = stored.slice(0, pipe);
-  const color = stored.slice(pipe + 1);
-  return { id: id || null, color: color || null };
-}
-
-function formatNoteIcon(id: string | null, color: string | null): string | null {
-  // No custom colour → fall back to the legacy id-only form, including null
-  // for the default 'note' icon so we don't churn rows that only ever had
-  // their colour reset.
-  if (!color) {
-    if (!id || id === 'note') return null;
-    return id;
-  }
-  return `${id ?? 'note'}|${color}`;
-}
-
-function NoteIconDisplay({ iconId, size = 11 }: { iconId: string | null | undefined; size?: number }) {
-  const { id, color } = parseNoteIcon(iconId);
-  const def = getNoteIconDef(id);
-  return <def.Icon size={size} style={{ color: color ?? def.color }} className="shrink-0" />;
-}
+// ─── Note icon palette (shared with the Mind Map — see noteIcons.tsx) ────────
+import {
+  NOTE_ICONS,
+  NOTE_ICON_COLORS,
+  parseNoteIcon,
+  formatNoteIcon,
+  NoteIconDisplay,
+} from './noteIcons';
 
 // ─── Note share status (sidebar icon only) ────────────────────────────────
 type ShareStatus = 'private' | 'shared_view' | 'shared_edit';
@@ -262,6 +173,9 @@ export default function Notes() {
   const noteOrder = useNotes((s) => s.noteOrder);
   const reorderNotes = useNotes((s) => s.reorderNotes);
   const activeNoteId = useNotes((s) => s.activeNoteId);
+  const openNoteIds = useNotes((s) => s.openNoteIds);
+  const closeNote = useNotes((s) => s.closeNote);
+  const moveOpenNote = useNotes((s) => s.moveOpenNote);
   const loadForCampaign = useNotes((s) => s.loadForCampaign);
   const subscribe = useNotes((s) => s.subscribe);
   const setActiveNote = useNotes((s) => s.setActiveNote);
@@ -664,6 +578,16 @@ export default function Notes() {
 
   const active = visibleNotes.find((n) => n.id === activeNoteId) ?? null;
 
+  // Open tabs, resolved to the notes the viewer can actually see (a tab whose
+  // note was deleted or hidden simply drops out). Kept in the store's tab order.
+  const openNotes = useMemo(() => {
+    const byId = new Map(visibleNotes.map((n) => [n.id, n]));
+    return openNoteIds.map((id) => byId.get(id)).filter((n): n is Note => !!n);
+  }, [openNoteIds, visibleNotes]);
+
+  // Which tab the pointer is dragging over (for reordering).
+  const [tabDragId, setTabDragId] = useState<string | null>(null);
+
   useEffect(() => {
     setCollapsedFolds(new Set());
   }, [active?.id]);
@@ -1032,6 +956,58 @@ export default function Notes() {
         )}
 
         <section className="flex-1 min-w-0 flex flex-col">
+          {/* ── Open-note tabs ─────────────────────────────────────────────
+              Multiple notes stay open at once; click a tab to switch, drag to
+              reorder, × to close. Opening any note (sidebar, wiki link, or the
+              dashboard peek) appends a tab automatically. */}
+          {openNotes.length > 0 && (
+            <div className="flex items-stretch border-b border-slate-800 bg-slate-950 overflow-x-auto">
+              {openNotes.map((n) => {
+                const isActive = n.id === activeNoteId;
+                return (
+                  <div
+                    key={n.id}
+                    draggable
+                    onDragStart={(e) => { setTabDragId(n.id); e.dataTransfer.effectAllowed = 'move'; }}
+                    onDragOver={(e) => { if (tabDragId && tabDragId !== n.id) e.preventDefault(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (tabDragId && tabDragId !== n.id) moveOpenNote(tabDragId, n.id);
+                      setTabDragId(null);
+                    }}
+                    onDragEnd={() => setTabDragId(null)}
+                    onClick={() => setActiveNote(n.id)}
+                    onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); closeNote(n.id); } }}
+                    title={n.title || 'Untitled'}
+                    className={`group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 max-w-[180px] border-r border-slate-800 cursor-pointer shrink-0 ${
+                      isActive
+                        ? 'bg-slate-900 text-slate-100 border-b-2 border-b-sky-600'
+                        : 'text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'
+                    }`}
+                  >
+                    <NoteIconDisplay iconId={n.icon} size={12} />
+                    <span className="truncate text-xs">{n.title || 'Untitled'}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeNote(n.id); }}
+                      title="Close tab"
+                      className={`p-0.5 rounded hover:bg-slate-700 shrink-0 ${
+                        isActive ? 'text-slate-400 hover:text-slate-100' : 'text-slate-600 group-hover:text-slate-300'
+                      }`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                onClick={() => onCreateNote(null)}
+                title="New note"
+                className="px-2 text-slate-500 hover:text-sky-300 hover:bg-slate-900/60 shrink-0"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+          )}
           {!active && (
             <div className="flex-1 flex items-center justify-center text-slate-500 text-sm">
               Select or create a note.

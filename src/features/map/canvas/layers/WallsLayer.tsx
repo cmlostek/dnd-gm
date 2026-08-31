@@ -1,62 +1,164 @@
 import type { MapWall } from '../../mapStore';
+import { wallPath, wallPoints } from '../../vision/walls';
 
 type Pt = { x: number; y: number };
 
 /**
- * Sight-blocking walls, drawn only for the GM (players never see the geometry).
- * Each wall is a grabbable line with endpoint dots so junctions are visible
- * while building a room; double-click removes it. A dashed preview follows the
- * cursor while a wall is being drawn.
+ * Sight-blocking walls, GM only (players never see the geometry, only its
+ * effect on line of sight and movement). A wall is a polyline through one or
+ * more segments. While the Wall tool is active each vertex shows a drag handle
+ * (alt- or right-click a handle to delete that vertex), and each segment shows
+ * a smaller midpoint handle — drag it to add a bend (insert a vertex). Double-
+ * click a wall to delete it. A dashed line previews a wall being drawn.
  *
- * Rendered near the top of the stack so the GM can always see and edit walls,
- * even over fog. Pure/prop-driven; the wall data is authored in the scene.
+ * Rendered above fog so walls stay visible while editing. Pure/prop-driven.
  */
 export default function WallsLayer({
   walls,
   zoom,
+  showHandles,
   draftStart,
   draftEnd,
   onRemoveWall,
+  onWallClick,
+  onVertexDown,
+  onSegmentInsert,
+  onVertexRemove,
+  selectedId,
+  stroke = '#fb7185',
+  showEndpoints = true,
 }: {
   walls: MapWall[];
   zoom: number;
+  /** Show the vertex + segment handles (true while the Wall tool is active). */
+  showHandles: boolean;
   draftStart: Pt | null;
   draftEnd: Pt | null;
   onRemoveWall?: (id: string) => void;
+  /** Single-click a wall (select, or in door-edit mode split a segment into a
+   *  door — the event carries the click position). */
+  onWallClick?: (id: string, e: React.MouseEvent) => void;
+  /** Press vertex `index` of a wall (drag to move, click to extend). */
+  onVertexDown?: (wall: MapWall, index: number, e: React.MouseEvent) => void;
+  /** Add a bend by dragging the midpoint of segment `segIndex` (verts i…i+1). */
+  onSegmentInsert?: (wall: MapWall, segIndex: number, e: React.MouseEvent) => void;
+  /** Delete vertex `index` (alt- or right-click a vertex handle). */
+  onVertexRemove?: (wall: MapWall, index: number) => void;
+  /** Id of the currently-selected wall (drawn with a highlight). */
+  selectedId?: string | null;
+  /** Line colour (GM red by default; players get grey). */
+  stroke?: string;
+  /** Draw the small endpoint dots (off for the read-only player view). */
+  showEndpoints?: boolean;
 }) {
-  const stroke = 3 / zoom;
+  const strokeW = 3 / zoom;
   const dot = 4 / zoom;
+  const handleR = 5 / zoom;
+  const midR = 3.5 / zoom;
   return (
     <g>
-      {walls.map((w) => (
-        <g key={w.id}>
-          {/* Fat invisible hit line so the thin wall is easy to double-click. */}
-          <line
-            x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
-            stroke="transparent"
-            strokeWidth={Math.max(stroke * 4, 10 / zoom)}
-            strokeLinecap="round"
-            style={{ cursor: onRemoveWall ? 'pointer' : 'default' }}
-            onDoubleClick={onRemoveWall ? () => onRemoveWall(w.id) : undefined}
-          />
-          <line
-            x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
-            stroke="#fb7185"
-            strokeWidth={stroke}
-            strokeLinecap="round"
-            strokeOpacity={0.85}
-            pointerEvents="none"
-          />
-          <circle cx={w.x1} cy={w.y1} r={dot} fill="#fecdd3" pointerEvents="none" />
-          <circle cx={w.x2} cy={w.y2} r={dot} fill="#fecdd3" pointerEvents="none" />
-        </g>
-      ))}
+      {walls.map((w) => {
+        const pts = wallPoints(w);
+        const selected = selectedId === w.id;
+        return (
+          <g key={w.id}>
+            {/* Selection glow underlay. */}
+            {selected && (
+              <path
+                d={wallPath(w)}
+                fill="none"
+                stroke="#38bdf8"
+                strokeWidth={strokeW * 3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeOpacity={0.4}
+                pointerEvents="none"
+              />
+            )}
+            {/* Fat invisible hit path for easy double-click delete / door click. */}
+            <path
+              d={wallPath(w)}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={Math.max(strokeW * 4, 12 / zoom)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ cursor: onWallClick || onRemoveWall ? 'pointer' : 'default' }}
+              onClick={onWallClick ? (e) => onWallClick(w.id, e) : undefined}
+              onDoubleClick={onRemoveWall ? () => onRemoveWall(w.id) : undefined}
+            />
+            <path
+              d={wallPath(w)}
+              fill="none"
+              stroke={stroke}
+              strokeWidth={strokeW}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeOpacity={0.85}
+              pointerEvents="none"
+            />
+            {showEndpoints && !showHandles &&
+              pts.map((p, i) => (
+                <circle key={i} cx={p.x} cy={p.y} r={dot} fill="#fecdd3" pointerEvents="none" />
+              ))}
+
+            {/* Segment midpoint handles — drag to insert a bend. */}
+            {showHandles && onSegmentInsert &&
+              pts.slice(0, -1).map((p, i) => {
+                const q = pts[i + 1];
+                const mx = (p.x + q.x) / 2;
+                const my = (p.y + q.y) / 2;
+                return (
+                  <circle
+                    key={`m${i}`}
+                    cx={mx}
+                    cy={my}
+                    r={midR}
+                    fill="#0f172a"
+                    stroke="#fda4af"
+                    strokeWidth={1 / zoom}
+                    style={{ cursor: 'copy' }}
+                    onMouseDown={(e) => { e.stopPropagation(); onSegmentInsert(w, i, e); }}
+                  >
+                    <title>Drag to add a bend</title>
+                  </circle>
+                );
+              })}
+
+            {/* Vertex handles — drag to move; alt/right-click to remove. */}
+            {showHandles && onVertexDown &&
+              pts.map((p, i) => (
+                <circle
+                  key={`v${i}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={handleR}
+                  fill="#fef08a"
+                  stroke="#f59e0b"
+                  strokeWidth={1 / zoom}
+                  style={{ cursor: 'grab' }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    if ((e.altKey || e.button === 2) && onVertexRemove) onVertexRemove(w, i);
+                    else onVertexDown(w, i, e);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    onVertexRemove?.(w, i);
+                  }}
+                >
+                  <title>Drag to move · alt/right-click to remove</title>
+                </circle>
+              ))}
+          </g>
+        );
+      })}
 
       {draftStart && draftEnd && (
         <line
           x1={draftStart.x} y1={draftStart.y} x2={draftEnd.x} y2={draftEnd.y}
           stroke="#fb7185"
-          strokeWidth={stroke}
+          strokeWidth={strokeW}
           strokeLinecap="round"
           strokeDasharray={`${6 / zoom} ${4 / zoom}`}
           pointerEvents="none"

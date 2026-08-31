@@ -47,7 +47,31 @@ export type Folder = {
 
 const EXPANDED_KEY = 'dnd-gm:expandedFolders';
 const ACTIVE_NOTE_KEY = 'dnd-gm:activeNoteId';
+const OPEN_NOTES_KEY = 'dnd-gm:openNoteIds';
 const ICON_KEY = 'dnd-gm:noteIcons';
+
+function readOpenNoteIds(): string[] {
+  try {
+    const raw = localStorage.getItem(OPEN_NOTES_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    const ids = Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
+    // Seed from a pre-existing active note so upgrading users don't land with
+    // an open editor but no tab for it.
+    const active = localStorage.getItem(ACTIVE_NOTE_KEY);
+    if (active && !ids.includes(active)) ids.push(active);
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+function writeOpenNoteIds(ids: string[]) {
+  try {
+    localStorage.setItem(OPEN_NOTES_KEY, JSON.stringify(ids));
+  } catch {
+    /* ignore quota / private-mode failures */
+  }
+}
 const EDITABLE_KEY = 'dnd-gm:noteEditable';
 const PERMS_KEY = 'dnd-gm:notePermissions';
 
@@ -125,6 +149,9 @@ type NotesState = {
   /** Current user's custom drag order, keyed by folder id (or 'root'). */
   noteOrder: Record<string, string[]>;
   activeNoteId: string | null;
+  /** Notes currently open as tabs, in tab order. The active tab is
+   *  activeNoteId; opening a note appends it here, closing removes it. */
+  openNoteIds: string[];
   loaded: boolean;
   error: string | null;
 
@@ -133,6 +160,11 @@ type NotesState = {
   clear: () => void;
 
   setActiveNote: (id: string | null) => void;
+  /** Close an open tab. If it was the active tab, activates an adjacent one. */
+  closeNote: (id: string) => void;
+  /** Reorder open tabs: move `id` to sit immediately before `beforeId`
+   *  (or to the end when beforeId is null). */
+  moveOpenNote: (id: string, beforeId: string | null) => void;
 
   createNote: (campaignId: string, folderId: string | null, ownerId?: string | null) => Promise<string | null>;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body' | 'folder_id' | 'visible_to_players' | 'icon' | 'player_editable' | 'ydoc_state'>>) => Promise<void>;
@@ -173,6 +205,7 @@ export const useNotes = create<NotesState>((set, get) => ({
   permissions: {},
   noteOrder: {},
   activeNoteId: localStorage.getItem(ACTIVE_NOTE_KEY),
+  openNoteIds: readOpenNoteIds(),
   loaded: false,
   error: null,
 
@@ -305,12 +338,48 @@ export const useNotes = create<NotesState>((set, get) => ({
     };
   },
 
-  clear: () => set({ notes: [], folders: [], drafts: {}, permissions: {}, noteOrder: {}, activeNoteId: null, loaded: false, error: null }),
+  clear: () => set({ notes: [], folders: [], drafts: {}, permissions: {}, noteOrder: {}, activeNoteId: null, openNoteIds: [], loaded: false, error: null }),
 
   setActiveNote: (id) => {
     if (id) localStorage.setItem(ACTIVE_NOTE_KEY, id);
     else localStorage.removeItem(ACTIVE_NOTE_KEY);
-    set({ activeNoteId: id });
+    set((s) => {
+      // Opening a note also makes it a tab (appended if not already open).
+      const openNoteIds = id && !s.openNoteIds.includes(id) ? [...s.openNoteIds, id] : s.openNoteIds;
+      if (openNoteIds !== s.openNoteIds) writeOpenNoteIds(openNoteIds);
+      return { activeNoteId: id, openNoteIds };
+    });
+  },
+
+  closeNote: (id) => {
+    set((s) => {
+      const idx = s.openNoteIds.indexOf(id);
+      if (idx < 0) return s;
+      const openNoteIds = s.openNoteIds.filter((x) => x !== id);
+      writeOpenNoteIds(openNoteIds);
+      // If we closed the active tab, activate the neighbour (prefer the tab to
+      // the right, then the left); otherwise leave the active tab untouched.
+      let activeNoteId = s.activeNoteId;
+      if (s.activeNoteId === id) {
+        activeNoteId = openNoteIds[idx] ?? openNoteIds[idx - 1] ?? null;
+        if (activeNoteId) localStorage.setItem(ACTIVE_NOTE_KEY, activeNoteId);
+        else localStorage.removeItem(ACTIVE_NOTE_KEY);
+      }
+      return { openNoteIds, activeNoteId };
+    });
+  },
+
+  moveOpenNote: (id, beforeId) => {
+    set((s) => {
+      if (!s.openNoteIds.includes(id) || id === beforeId) return s;
+      const without = s.openNoteIds.filter((x) => x !== id);
+      const at = beforeId ? without.indexOf(beforeId) : -1;
+      const openNoteIds = at < 0
+        ? [...without, id]
+        : [...without.slice(0, at), id, ...without.slice(at)];
+      writeOpenNoteIds(openNoteIds);
+      return { openNoteIds };
+    });
   },
 
   createNote: async (campaignId, folderId, ownerId) => {
@@ -331,7 +400,11 @@ export const useNotes = create<NotesState>((set, get) => ({
       return null;
     }
     const note = data as Note;
-    set((s) => ({ notes: [note, ...s.notes], activeNoteId: note.id }));
+    set((s) => {
+      const openNoteIds = [...s.openNoteIds, note.id];
+      writeOpenNoteIds(openNoteIds);
+      return { notes: [note, ...s.notes], activeNoteId: note.id, openNoteIds };
+    });
     localStorage.setItem(ACTIVE_NOTE_KEY, note.id);
     return note.id;
   },
@@ -524,14 +597,25 @@ export const useNotes = create<NotesState>((set, get) => ({
       delete drafts[id];
       const permissions = { ...s.permissions };
       delete permissions[id];
+      // Drop the closed note's tab and, if it was active, fall back to a
+      // neighbouring tab (right, then left) so the editor stays populated.
+      const idx = s.openNoteIds.indexOf(id);
+      const openNoteIds = s.openNoteIds.filter((x) => x !== id);
+      if (openNoteIds.length !== s.openNoteIds.length) writeOpenNoteIds(openNoteIds);
+      const activeNoteId = s.activeNoteId === id
+        ? (idx >= 0 ? (openNoteIds[idx] ?? openNoteIds[idx - 1] ?? null) : null)
+        : s.activeNoteId;
       return {
         notes: s.notes.filter((n) => n.id !== id),
-        activeNoteId: s.activeNoteId === id ? null : s.activeNoteId,
+        activeNoteId,
+        openNoteIds,
         drafts,
         permissions,
       };
     });
-    if (localStorage.getItem(ACTIVE_NOTE_KEY) === id) localStorage.removeItem(ACTIVE_NOTE_KEY);
+    const nextActive = get().activeNoteId;
+    if (nextActive) localStorage.setItem(ACTIVE_NOTE_KEY, nextActive);
+    else if (localStorage.getItem(ACTIVE_NOTE_KEY) === id) localStorage.removeItem(ACTIVE_NOTE_KEY);
     const { error } = await supabase.from('notes').delete().eq('id', id);
     if (error) set({ notes: prev, error: error.message });
   },

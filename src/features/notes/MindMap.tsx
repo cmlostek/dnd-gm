@@ -4,6 +4,7 @@ import { Network, ArrowLeft } from 'lucide-react';
 import PageHeader from '../../components/PageHeader';
 import { useSession } from '../session/sessionStore';
 import { useNotes, canViewNote, EMPTY_PERMS, type Note } from './notesStore';
+import { resolveNoteIcon } from './noteIcons';
 
 /**
  * Extract `[[Title]]` and `[[Title#Heading]]` references from a note body.
@@ -55,6 +56,8 @@ type Node = {
   vy: number;
   degree: number;
   tags: string[];
+  /** Raw `note.icon` string (id or `id|#hex`) — resolved to Icon + colour at render. */
+  icon: string | null;
 };
 
 type Edge = { from: string; to: string };
@@ -195,6 +198,7 @@ export default function MindMap() {
       vy: 0,
       degree: 0,
       tags: extractTags(n.body || ''),
+      icon: n.icon,
     }));
     const es: Edge[] = [];
     const seen = new Set<string>();
@@ -250,18 +254,48 @@ export default function MindMap() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const dragRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  // Which node is being dragged, its screen-space grab point, its position at
+  // grab time, and whether the pointer has moved far enough to count as a drag
+  // (below the threshold a mouseup is treated as a click that opens the note).
+  const nodeDragRef = useRef<
+    { id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null
+  >(null);
+  const [grabbing, setGrabbing] = useState(false);
+
+  const onNodeMouseDown = (e: React.MouseEvent, id: string, p: { x: number; y: number }) => {
+    e.stopPropagation(); // don't start a canvas pan
+    nodeDragRef.current = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+  };
 
   const onMouseDown = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('[data-node]')) return;
     dragRef.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    setGrabbing(true);
   };
   const onMouseMove = (e: React.MouseEvent) => {
+    // Node drag takes precedence over canvas pan. Screen deltas are divided by
+    // the zoom factor so the node tracks the cursor 1:1 in graph space.
+    const nd = nodeDragRef.current;
+    if (nd) {
+      const dx = (e.clientX - nd.sx) / view.k;
+      const dy = (e.clientY - nd.sy) / view.k;
+      if (!nd.moved && Math.hypot(e.clientX - nd.sx, e.clientY - nd.sy) > 3) nd.moved = true;
+      setPositions((prev) => ({ ...prev, [nd.id]: { x: nd.ox + dx, y: nd.oy + dy } }));
+      return;
+    }
     const d = dragRef.current;
     if (!d) return;
     setView((v) => ({ ...v, x: d.vx + (e.clientX - d.x), y: d.vy + (e.clientY - d.y) }));
   };
   const onMouseUp = () => {
+    const nd = nodeDragRef.current;
+    if (nd) {
+      nodeDragRef.current = null;
+      // A grab that never moved is a click → open the note.
+      if (!nd.moved) openNote(nd.id);
+    }
     dragRef.current = null;
+    setGrabbing(false);
   };
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault();
@@ -307,7 +341,7 @@ export default function MindMap() {
             onMouseUp={onMouseUp}
             onMouseLeave={onMouseUp}
             onWheel={onWheel}
-            style={{ cursor: dragRef.current ? 'grabbing' : 'grab' }}
+            style={{ cursor: grabbing ? 'grabbing' : 'grab' }}
           >
             <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
               {/* Tag halos — soft circles around each tag's cluster centroid,
@@ -371,23 +405,42 @@ export default function MindMap() {
               {nodes.map((n) => {
                 const p = positions[n.id];
                 if (!p) return null;
-                const r = 8 + Math.min(12, n.degree * 1.5);
+                const r = 11 + Math.min(11, n.degree * 1.5);
+                const { Icon, color } = resolveNoteIcon(n.icon);
+                const iconSize = Math.round(r * 1.15);
                 return (
                   <g
                     key={n.id}
                     data-node
                     transform={`translate(${p.x},${p.y})`}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => openNote(n.id)}
+                    style={{ cursor: 'grab' }}
+                    onMouseDown={(e) => onNodeMouseDown(e, n.id, p)}
                   >
+                    {/* Disc tinted with the note's icon colour, brighter for
+                        linked notes so hubs still read at a glance. */}
                     <circle
                       r={r}
-                      fill={n.degree > 0 ? '#0ea5e9' : '#334155'}
-                      stroke="#0f172a"
+                      fill={color}
+                      fillOpacity={n.degree > 0 ? 0.22 : 0.14}
+                      stroke={color}
                       strokeWidth={2}
+                      strokeOpacity={n.degree > 0 ? 0.9 : 0.55}
                     />
+                    {/* The note's file icon, centred in the disc. foreignObject
+                        lets us render the same lucide component the sidebar uses. */}
+                    <foreignObject
+                      x={-iconSize / 2}
+                      y={-iconSize / 2}
+                      width={iconSize}
+                      height={iconSize}
+                      style={{ overflow: 'visible', pointerEvents: 'none' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}>
+                        <Icon size={iconSize} color={color} strokeWidth={2} />
+                      </div>
+                    </foreignObject>
                     <text
-                      x={r + 4}
+                      x={r + 5}
                       y={4}
                       fontSize={12}
                       fill="#e2e8f0"
@@ -405,7 +458,7 @@ export default function MindMap() {
         )}
       </div>
       <div className="px-4 py-1.5 text-[10px] text-slate-600 border-t border-slate-800 bg-slate-950">
-        Drag empty space to pan · scroll to zoom · click a node to open the note
+        Drag empty space to pan · scroll to zoom · drag a node to reposition it · click a node to open the note
       </div>
     </div>
   );

@@ -34,6 +34,10 @@ export type MapToken = {
   /** Active condition slugs (e.g. 'poisoned', 'prone'). Matches CONDITIONS
    *  index from src/data/conditions.ts. Drawn as overlay chips on the token. */
   conditions?: string[];
+  /** Light/vision radius (Phase 4). A token carrying a torch or with darkvision
+   *  reveals a wall-bounded disc this far around itself in a dark scene — the
+   *  light moves with the token. 0/undefined = none. */
+  lightRadius?: number;
 };
 
 export type MapShape =
@@ -79,6 +83,12 @@ export type FogData = {
   revealed: string[];
   /** Cells the party has ever seen (dynamic mode) — stay dimly lit. */
   explored: string[];
+  /**
+   * Scene darkness (Phase 3, dynamic mode). Off = daylight: line of sight
+   * reveals everything. On = the party sees only where sight AND light overlap;
+   * lit areas come from placed lights, themselves wall-bounded.
+   */
+  ambientDark: boolean;
 };
 
 export const DEFAULT_FOG_CELL = 50;
@@ -88,20 +98,61 @@ export const defaultFog = (): FogData => ({
   cell: DEFAULT_FOG_CELL,
   revealed: [],
   explored: [],
+  ambientDark: false,
 });
+
+/**
+ * A light source (Phase 3). GM-placed; illuminates a radius, wall-bounded.
+ * In a dark scene the party sees only where their line of sight overlaps lit
+ * area. `radius` is in logical units.
+ */
+export type MapLight = { id: string; x: number; y: number; radius: number; color?: string };
+
+export const DEFAULT_LIGHT_RADIUS = 150;
 
 /**
  * A sight-blocking wall segment (Phase 2). GM-authored, never shown to players;
  * feeds the line-of-sight computation. Structurally a visibility `Seg` plus an
  * id. Stored in scene.data — tiny (four numbers), so no realtime-size concern.
  */
-export type MapWall = { id: string; x1: number; y1: number; x2: number; y2: number };
+/**
+ * A doorway carried on a wall segment. GM-controlled (map_scenes is GM-writable
+ * only): the GM opens/closes/locks it; players see its state and can pass
+ * through it when open. An open door is excluded from the sight/collision
+ * segments, so line-of-sight and token movement both flow through it.
+ */
+export type MapDoor = {
+  /** Open → passable + see-through (rendered dashed). Closed → blocks (solid). */
+  open: boolean;
+  /** Locked doors can't be opened from the canvas without unlocking first. */
+  locked: boolean;
+  /** Building/room label shown on hover. */
+  name?: string;
+};
+
+export type MapWall = {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** Optional quadratic-bezier control point — bends a legacy segment into an
+   *  arc. Superseded by `points` for multi-point walls. */
+  cx?: number;
+  cy?: number;
+  /** Multi-point polyline: straight segments through these ≥2 vertices.
+   *  When present, x1/y1/x2/y2 mirror the first/last vertex. */
+  points?: { x: number; y: number }[];
+  /** When set, this wall is a doorway (see MapDoor). Absent = plain wall. */
+  door?: MapDoor;
+};
 
 type SceneData = {
   shapes?: MapShape[];
   layers?: ImageLayer[];
   fog?: FogData;
   walls?: MapWall[];
+  lights?: MapLight[];
 };
 
 export type MapScene = {
@@ -116,6 +167,7 @@ export type MapScene = {
   layers: ImageLayer[];
   fog: FogData;
   walls: MapWall[];
+  lights: MapLight[];
 };
 
 export type MapState = {
@@ -132,6 +184,7 @@ type TokenData = {
   maxHp?: number;
   damageLog?: DamageLogEntry[];
   conditions?: string[];
+  lightRadius?: number;
 };
 
 type TokenRow = {
@@ -190,16 +243,18 @@ function rowToToken(r: TokenRow): MapToken {
     maxHp: r.data?.maxHp,
     damageLog: r.data?.damageLog,
     conditions: r.data?.conditions ?? [],
+    lightRadius: r.data?.lightRadius,
   };
 }
 
-function tokenDataPayload(t: Pick<MapToken, 'emoji' | 'hp' | 'maxHp' | 'damageLog' | 'conditions'>): TokenData {
+function tokenDataPayload(t: Pick<MapToken, 'emoji' | 'hp' | 'maxHp' | 'damageLog' | 'conditions' | 'lightRadius'>): TokenData {
   const d: TokenData = {};
   if (t.emoji) d.emoji = t.emoji;
   if (t.hp != null) d.hp = t.hp;
   if (t.maxHp != null) d.maxHp = t.maxHp;
   if (t.damageLog && t.damageLog.length > 0) d.damageLog = t.damageLog;
   if (t.conditions && t.conditions.length > 0) d.conditions = t.conditions;
+  if (t.lightRadius) d.lightRadius = t.lightRadius;
   return d;
 }
 
@@ -215,14 +270,15 @@ function rowToScene(r: SceneRow): MapScene {
     height: r.height ?? DEFAULT_CANVAS_H,
     shapes: d.shapes ?? [],
     layers: d.layers ?? [],
-    // Merge over defaults so pre-Phase-2c fog rows gain mode/explored.
+    // Merge over defaults so pre-Phase-2c fog rows gain mode/explored/ambientDark.
     fog: { ...defaultFog(), ...(d.fog ?? {}) },
     walls: d.walls ?? [],
+    lights: d.lights ?? [],
   };
 }
 
-function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog' | 'walls'>): SceneData {
-  return { shapes: s.shapes, layers: s.layers, fog: s.fog, walls: s.walls };
+function sceneDataPayload(s: Pick<MapScene, 'shapes' | 'layers' | 'fog' | 'walls' | 'lights'>): SceneData {
+  return { shapes: s.shapes, layers: s.layers, fog: s.fog, walls: s.walls, lights: s.lights };
 }
 
 function rowToState(r: StateRow): MapState {
@@ -267,8 +323,19 @@ type MapStore = {
 
   // ── Walls (per-scene, sight-blocking) ────────────────────────────────────
   addWall: (sceneId: string, wall: MapWall) => Promise<void>;
+  updateWall: (sceneId: string, wall: MapWall) => Promise<void>;
+  /** Replace one wall with zero or more others in a single write (used to split
+   *  a wall when turning one of its segments into a doorway). */
+  replaceWall: (sceneId: string, oldId: string, newWalls: MapWall[]) => Promise<void>;
   removeWall: (sceneId: string, wallId: string) => Promise<void>;
   clearWalls: (sceneId: string) => Promise<void>;
+
+  // ── Lights (per-scene) ───────────────────────────────────────────────────
+  addLight: (sceneId: string, light: MapLight) => Promise<void>;
+  updateLight: (sceneId: string, light: MapLight) => Promise<void>;
+  removeLight: (sceneId: string, lightId: string) => Promise<void>;
+  clearLights: (sceneId: string) => Promise<void>;
+  setAmbientDark: (sceneId: string, dark: boolean) => Promise<void>;
 
   // ── Fog of war (per-scene) ───────────────────────────────────────────────
   setFogEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
@@ -288,7 +355,68 @@ type MapStore = {
   addToken: (campaignId: string, t: Omit<MapToken, 'id'>) => Promise<string | null>;
   updateToken: (id: string, patch: Partial<MapToken>, fromSync?: boolean) => Promise<void>;
   removeToken: (id: string) => Promise<void>;
+
+  // ── Undo / redo (GM scene-data edits: walls, shapes, lights, layers) ──────
+  /** Per-scene undo/redo stacks of scene-data snapshots. */
+  history: Record<string, { undo: SceneData[]; redo: SceneData[] }>;
+  /** Snapshot the scene's current data before an edit (clears redo). Called at
+   *  the top of the discrete editing actions below. */
+  recordHistory: (sceneId: string) => void;
+  undo: (sceneId: string) => Promise<void>;
+  redo: (sceneId: string) => Promise<void>;
 };
+
+/** Human-readable message from any thrown value. Supabase/PostgREST errors are
+ *  plain objects (not Error instances), so a naive String(e) yields the useless
+ *  "[object Object]" — pull their .message/.details/.hint instead. */
+function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === 'object') {
+    const o = e as Record<string, unknown>;
+    const parts = [o.message, o.details, o.hint].filter((x): x is string => typeof x === 'string' && x.length > 0);
+    if (parts.length) return parts.join(' — ');
+    if (typeof o.error_description === 'string') return o.error_description;
+    try { return JSON.stringify(e); } catch { return 'Unknown error'; }
+  }
+  return String(e);
+}
+
+const HISTORY_CAP = 60;
+
+/**
+ * Snapshot a scene's editable data for the undo/redo stacks. Arrays are copied
+ * so later edits don't mutate the snapshot, but element objects are SHARED by
+ * reference — the store always replaces elements rather than mutating them in
+ * place, so this stays correct while avoiding duplicating large image data-URLs
+ * held in layers across dozens of history entries.
+ */
+function snapshotSceneData(scene: MapScene): SceneData {
+  return {
+    shapes: [...scene.shapes],
+    layers: [...scene.layers],
+    fog: { ...scene.fog, revealed: [...scene.fog.revealed], explored: [...scene.fog.explored] },
+    walls: [...scene.walls],
+    lights: [...scene.lights],
+  };
+}
+
+/** Overlay a data snapshot back onto a scene (restores every editable field). */
+function applySceneData(scene: MapScene, d: SceneData): MapScene {
+  return {
+    ...scene,
+    shapes: d.shapes ?? [],
+    layers: d.layers ?? [],
+    fog: d.fog ?? scene.fog,
+    walls: d.walls ?? [],
+    lights: d.lights ?? [],
+  };
+}
+
+/** Persist just the data column of a scene (used by undo/redo). */
+async function persistSceneData(sceneId: string, data: SceneData) {
+  const { error } = await supabase.from('map_scenes').update({ data }).eq('id', sceneId);
+  if (error) throw error;
+}
 
 // Mutate a scene's data jsonb safely — fetches current data, applies the
 // mutation, writes the merged result so realtime echoes back the correct
@@ -325,6 +453,59 @@ export const useMap = create<MapStore>((set, get) => ({
   tokens: [],
   loaded: false,
   error: null,
+  history: {},
+
+  recordHistory: (sceneId) => {
+    const scene = get().scenes.find((s) => s.id === sceneId);
+    if (!scene) return;
+    const snap = snapshotSceneData(scene);
+    set((st) => {
+      const h = st.history[sceneId] ?? { undo: [], redo: [] };
+      return {
+        history: {
+          ...st.history,
+          // A fresh edit invalidates the redo branch.
+          [sceneId]: { undo: [...h.undo, snap].slice(-HISTORY_CAP), redo: [] },
+        },
+      };
+    });
+  },
+
+  undo: async (sceneId) => {
+    const st = get();
+    const h = st.history[sceneId];
+    const scene = st.scenes.find((s) => s.id === sceneId);
+    if (!h || h.undo.length === 0 || !scene) return;
+    const prev = h.undo[h.undo.length - 1];
+    const current = snapshotSceneData(scene);
+    set((s) => ({
+      scenes: s.scenes.map((sc) => (sc.id === sceneId ? applySceneData(sc, prev) : sc)),
+      history: {
+        ...s.history,
+        [sceneId]: { undo: h.undo.slice(0, -1), redo: [...h.redo, current].slice(-HISTORY_CAP) },
+      },
+    }));
+    try { await persistSceneData(sceneId, prev); }
+    catch (e) { set({ error: e instanceof Error ? e.message : 'Undo failed' }); }
+  },
+
+  redo: async (sceneId) => {
+    const st = get();
+    const h = st.history[sceneId];
+    const scene = st.scenes.find((s) => s.id === sceneId);
+    if (!h || h.redo.length === 0 || !scene) return;
+    const next = h.redo[h.redo.length - 1];
+    const current = snapshotSceneData(scene);
+    set((s) => ({
+      scenes: s.scenes.map((sc) => (sc.id === sceneId ? applySceneData(sc, next) : sc)),
+      history: {
+        ...s.history,
+        [sceneId]: { undo: [...h.undo, current].slice(-HISTORY_CAP), redo: h.redo.slice(0, -1) },
+      },
+    }));
+    try { await persistSceneData(sceneId, next); }
+    catch (e) { set({ error: e instanceof Error ? e.message : 'Redo failed' }); }
+  },
 
   loadForCampaign: async (campaignId) => {
     set({ loaded: false, error: null });
@@ -359,9 +540,10 @@ export const useMap = create<MapStore>((set, get) => ({
         scenes,
         tokens,
         loaded: true,
+        history: {},
       });
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e), loaded: true });
+      set({ error: errMsg(e), loaded: true });
     }
   },
 
@@ -401,7 +583,7 @@ export const useMap = create<MapStore>((set, get) => ({
             const truncated = existing && newRow.data == null;
             const incoming = rowToScene(newRow);
             const merged: MapScene = truncated
-              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog, walls: existing!.walls }
+              ? { ...incoming, shapes: existing!.shapes, layers: existing!.layers, fog: existing!.fog, walls: existing!.walls, lights: existing!.lights }
               : incoming;
             set({
               scenes: scenes
@@ -437,7 +619,7 @@ export const useMap = create<MapStore>((set, get) => ({
     };
   },
 
-  clear: () => set({ state: DEFAULT_STATE, scenes: [], tokens: [], loaded: false, error: null }),
+  clear: () => set({ state: DEFAULT_STATE, scenes: [], tokens: [], loaded: false, error: null, history: {} }),
 
   // ── Scenes ──────────────────────────────────────────────────────────────
   addScene: async (campaignId, name) => {
@@ -571,6 +753,7 @@ export const useMap = create<MapStore>((set, get) => ({
 
   // ── Image layers ────────────────────────────────────────────────────────
   addLayer: async (sceneId, layer) => {
+    get().recordHistory(sceneId);
     const id = crypto.randomUUID();
     const full: ImageLayer = { id, ...layer };
     const prev = get().scenes;
@@ -581,12 +764,13 @@ export const useMap = create<MapStore>((set, get) => ({
       await mutateSceneData(sceneId, (s) => ({ layers: [...s.layers, full] }));
       return id;
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
       return null;
     }
   },
 
   updateLayer: async (sceneId, layer) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -600,11 +784,12 @@ export const useMap = create<MapStore>((set, get) => ({
         layers: s.layers.map((l) => (l.id === layer.id ? layer : l)),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeLayer: async (sceneId, layerId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -616,12 +801,13 @@ export const useMap = create<MapStore>((set, get) => ({
         layers: s.layers.filter((l) => l.id !== layerId),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   // ── Shapes ──────────────────────────────────────────────────────────────
   addShape: async (sceneId, shape) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -631,11 +817,12 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ shapes: [...s.shapes, shape] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   updateShape: async (sceneId, shape) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -649,11 +836,12 @@ export const useMap = create<MapStore>((set, get) => ({
         shapes: s.shapes.map((x) => (x.id === shape.id ? shape : x)),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeShape: async (sceneId, shapeId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) =>
@@ -665,11 +853,12 @@ export const useMap = create<MapStore>((set, get) => ({
         shapes: s.shapes.filter((x) => x.id !== shapeId),
       }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   clearShapes: async (sceneId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({
       scenes: prev.map((s) => (s.id === sceneId ? { ...s, shapes: [] } : s)),
@@ -677,38 +866,119 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, () => ({ shapes: [] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   // ── Walls ───────────────────────────────────────────────────────────────
   addWall: async (sceneId, wall) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [...s.walls, wall] } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: [...s.walls, wall] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  updateWall: async (sceneId, wall) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ walls: s.walls.map((w) => (w.id === wall.id ? wall : w)) }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  replaceWall: async (sceneId, oldId, newWalls) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    const splice = (walls: MapWall[]) => [...walls.filter((w) => w.id !== oldId), ...newWalls];
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: splice(s.walls) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ walls: splice(s.walls) }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   removeWall: async (sceneId, wallId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: s.walls.filter((w) => w.id !== wallId) } : s)) });
     try {
       await mutateSceneData(sceneId, (s) => ({ walls: s.walls.filter((w) => w.id !== wallId) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
   clearWalls: async (sceneId) => {
+    get().recordHistory(sceneId);
     const prev = get().scenes;
     set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, walls: [] } : s)) });
     try {
       await mutateSceneData(sceneId, () => ({ walls: [] }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  // ── Lights ───────────────────────────────────────────────────────────────
+  addLight: async (sceneId, light) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: [...s.lights, light] } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ lights: [...s.lights, light] }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  updateLight: async (sceneId, light) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: s.lights.map((l) => (l.id === light.id ? light : l)) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ lights: s.lights.map((l) => (l.id === light.id ? light : l)) }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  removeLight: async (sceneId, lightId) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: s.lights.filter((l) => l.id !== lightId) } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ lights: s.lights.filter((l) => l.id !== lightId) }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  clearLights: async (sceneId) => {
+    get().recordHistory(sceneId);
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, lights: [] } : s)) });
+    try {
+      await mutateSceneData(sceneId, () => ({ lights: [] }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
+    }
+  },
+
+  setAmbientDark: async (sceneId, dark) => {
+    const prev = get().scenes;
+    set({ scenes: prev.map((s) => (s.id === sceneId ? { ...s, fog: { ...s.fog, ambientDark: dark } } : s)) });
+    try {
+      await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, ambientDark: dark } }));
+    } catch (e) {
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -727,7 +997,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: apply(s) }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -737,7 +1007,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, mode } }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -760,7 +1030,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, () => ({ fog }));
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: errMsg(e) });
     }
   },
 
@@ -770,7 +1040,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, revealed: [], explored: [] } }));
     } catch (e) {
-      set({ scenes: prev, error: e instanceof Error ? e.message : String(e) });
+      set({ scenes: prev, error: errMsg(e) });
     }
   },
 
@@ -786,7 +1056,7 @@ export const useMap = create<MapStore>((set, get) => ({
     try {
       await mutateSceneData(sceneId, (s) => ({ fog: { ...s.fog, explored } }));
     } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
+      set({ error: errMsg(e) });
     }
   },
 
@@ -838,7 +1108,7 @@ export const useMap = create<MapStore>((set, get) => ({
     if ('owner_user_id' in patch) row.owner_user_id = next.owner_user_id;
     if ('scene_id' in patch) row.scene_id = next.scene_id;
     if ('hidden_from_players' in patch) row.hidden_from_players = next.hidden_from_players;
-    if ('emoji' in patch || 'hp' in patch || 'maxHp' in patch || 'damageLog' in patch || 'conditions' in patch) {
+    if ('emoji' in patch || 'hp' in patch || 'maxHp' in patch || 'damageLog' in patch || 'conditions' in patch || 'lightRadius' in patch) {
       row.data = tokenDataPayload(next);
     }
 
