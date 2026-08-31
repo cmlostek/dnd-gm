@@ -4,7 +4,6 @@ import {
   Moon,
   Eye,
   EyeOff,
-  ArrowLeftRight,
   LogOut,
   RotateCcw,
   GripVertical,
@@ -71,7 +70,6 @@ export default function Settings() {
   const role = useSession((s) => s.role);
   const viewAsPlayer = useSession((s) => s.viewAsPlayer);
   const setViewAsPlayer = useSession((s) => s.setViewAsPlayer);
-  const leaveCurrent = useSession((s) => s.leaveCurrent);
   const signOut = useSession((s) => s.signOut);
   const email = useSession((s) => s.email);
   const campaignId = useSession((s) => s.campaignId);
@@ -465,7 +463,6 @@ export default function Settings() {
         <Section title="Account">
           <AccountEmailRow email={email} />
           <AccountPasswordRow email={email} />
-          <Row icon={<ArrowLeftRight size={14} />} label="Switch campaign" onClick={leaveCurrent} />
           <Row icon={<LogOut size={14} />} label="Sign out" onClick={signOut} danger />
         </Section>
       </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Route, Routes, Navigate, useLocation } from 'react-router-dom';
-import { Swords, NotebookPen, Map as MapIcon, BookOpen, Sparkles, Package, ScrollText, Users, FlaskConical, Dices, Copy, Mic, Eye, Settings as SettingsIcon, BookMarked, Radio, LayoutDashboard, Menu, X as XIcon, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { Swords, NotebookPen, Map as MapIcon, BookOpen, Sparkles, Package, ScrollText, Users, FlaskConical, Dices, Copy, Mic, Eye, Settings as SettingsIcon, BookMarked, Radio, LayoutDashboard, Menu, X as XIcon, ChevronsLeft, ChevronsRight, ArrowLeftRight } from 'lucide-react';
 import { QuickDice } from './features/dice/QuickDice';
 import DiceRollOverlay from './features/dice/DiceRollOverlay';
 import CommandPalette from './features/palette/CommandPalette';
@@ -87,6 +87,7 @@ function AppShell() {
   const toggleScratchpad = useScratchpad((s) => s.toggle);
   const scratchpadOpen = useScratchpad((s) => s.open);
   const role = useSession((s) => s.role);
+  const leaveCurrent = useSession((s) => s.leaveCurrent);
   const campaignId = useSession((s) => s.campaignId);
   const campaignName = useSession((s) => s.campaignName);
   const joinCode = useSession((s) => s.joinCode);
@@ -386,9 +387,16 @@ function AppShell() {
           ))}
         </nav>
 
-        {/* ── Footer ─ single Settings entry; everything else moved into the
-            Settings page. ─────────────────────────────────────────────────── */}
+        {/* ── Footer ─ Switch campaign + Settings. ─────────────────────────── */}
         <div className="border-t border-slate-800">
+          <button
+            onClick={() => { setMobileOpen(false); void leaveCurrent(); }}
+            title={collapsed ? 'Switch campaign' : undefined}
+            className={`w-full flex items-center ${collapsed ? 'justify-center px-0' : 'gap-3 px-4'} py-2.5 text-sm text-slate-400 hover:bg-slate-900 hover:text-slate-200 transition-colors`}
+          >
+            <ArrowLeftRight size={16} />
+            {!collapsed && 'Switch campaign'}
+          </button>
           <NavLink
             to="/settings"
             title={collapsed ? 'Settings' : undefined}
