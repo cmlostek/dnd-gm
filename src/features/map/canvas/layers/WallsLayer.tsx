@@ -35,10 +35,10 @@ export default function WallsLayer({
   onRemoveWall?: (id: string) => void;
   /** Single-click a wall (used by door-edit mode to convert it to a doorway). */
   onWallClick?: (id: string) => void;
-  /** Begin dragging vertex `index` of a wall. */
-  onVertexDown?: (wall: MapWall, index: number) => void;
+  /** Press vertex `index` of a wall (drag to move, click to extend). */
+  onVertexDown?: (wall: MapWall, index: number, e: React.MouseEvent) => void;
   /** Add a bend by dragging the midpoint of segment `segIndex` (verts i…i+1). */
-  onSegmentInsert?: (wall: MapWall, segIndex: number) => void;
+  onSegmentInsert?: (wall: MapWall, segIndex: number, e: React.MouseEvent) => void;
   /** Delete vertex `index` (alt- or right-click a vertex handle). */
   onVertexRemove?: (wall: MapWall, index: number) => void;
   /** Id of the currently-selected wall (drawn with a highlight). */
@@ -111,7 +111,7 @@ export default function WallsLayer({
                     stroke="#fda4af"
                     strokeWidth={1 / zoom}
                     style={{ cursor: 'copy' }}
-                    onMouseDown={(e) => { e.stopPropagation(); onSegmentInsert(w, i); }}
+                    onMouseDown={(e) => { e.stopPropagation(); onSegmentInsert(w, i, e); }}
                   >
                     <title>Drag to add a bend</title>
                   </circle>
@@ -133,7 +133,7 @@ export default function WallsLayer({
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     if ((e.altKey || e.button === 2) && onVertexRemove) onVertexRemove(w, i);
-                    else onVertexDown(w, i);
+                    else onVertexDown(w, i, e);
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();

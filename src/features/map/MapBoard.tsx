@@ -545,8 +545,13 @@ export default function MapBoard() {
   // Wall bend drag — the live-preview wall while dragging its midpoint handle
   // into a curve. Committed to the store (updateWall) on mouse-up.
   const [wallBend, setWallBend] = useState<MapWall | null>(null);
-  // While dragging a wall vertex, which point of the draft is moving.
-  const wallEditRef = useRef<{ index: number } | null>(null);
+  // While pressing a wall vertex: which point, the grab screen point, and
+  // whether the pointer has moved far enough to count as a drag (vs a click,
+  // which instead starts extending the wall from that vertex).
+  const wallEditRef = useRef<{ index: number; sx: number; sy: number; moved: boolean } | null>(null);
+  // Extending a wall from one of its endpoints: a rubber-band segment follows
+  // the cursor and each click appends a connected vertex until Esc/right-click.
+  const [wallExtend, setWallExtend] = useState<{ wallId: string; end: 'start' | 'end'; cursor: { x: number; y: number } } | null>(null);
   // Shape drag state — { id, ox, oy } where ox/oy are the offsets from the
   // shape's anchor to the mouse-down point, so the shape doesn't snap to
   // the cursor on grab.
@@ -775,7 +780,10 @@ export default function MapBoard() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target;
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
-      if (e.key === 'Escape' && selection) { setSelection(null); return; }
+      if (e.key === 'Escape') {
+        if (wallExtend) { setWallExtend(null); return; }
+        if (selection) { setSelection(null); return; }
+      }
       if (!currentSceneId) return;
       const mod = e.metaKey || e.ctrlKey;
       const k = e.key.toLowerCase();
@@ -833,7 +841,12 @@ export default function MapBoard() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isGM, currentSceneId, undo, redo, selection, addWall, removeWall, removeShape]);
+  }, [isGM, currentSceneId, undo, redo, selection, wallExtend, addWall, removeWall, removeShape]);
+
+  // Leaving wall-draw mode cancels any in-progress extension.
+  useEffect(() => {
+    if (tool !== 'wall' || doorEditMode) setWallExtend(null);
+  }, [tool, doorEditMode]);
 
   // ── Fit content to screen ────────────────────────────────────────────────
   // Fits the bounding box of the canvas border PLUS every visible image
@@ -1299,6 +1312,25 @@ export default function MapBoard() {
     if (draggingTokenId) return;
     if (!campaignId) return;
 
+    // Extending a wall: right-click (or Esc) finishes; left-click appends a
+    // connected vertex at the cursor and keeps extending from the new end.
+    if (wallExtend) {
+      if (e.button === 2) { setWallExtend(null); return; }
+      if (e.button === 0) {
+        const p0 = screenToLogical(e);
+        const g = mapGridSize || 50;
+        const np = wallSnap ? { x: Math.round(p0.x / g) * g, y: Math.round(p0.y / g) * g } : { x: p0.x, y: p0.y };
+        const wall = (currentScene?.walls ?? []).find((w) => w.id === wallExtend.wallId);
+        if (wall && currentSceneId) {
+          const pts = wallPoints(wall);
+          const next = wallExtend.end === 'end' ? [...pts, np] : [np, ...pts];
+          void updateWall(currentSceneId, withWallPoints(wall, next));
+          setWallExtend({ ...wallExtend, cursor: np });
+        }
+        return;
+      }
+    }
+
     // Middle button or space+left → pan
     if (e.button === 1 || (e.button === 0 && isSpaceDown)) {
       e.preventDefault();
@@ -1406,11 +1438,26 @@ export default function MapBoard() {
 
     const p = screenToLogical(e);
 
+    if (wallExtend) {
+      // Rubber-band the pending extension segment toward the cursor.
+      const g = mapGridSize || 50;
+      const c = wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y };
+      setWallExtend({ ...wallExtend, cursor: c });
+      return;
+    }
+
     if (wallEditRef.current && wallBend) {
+      // Below the drag threshold this press is still a (potential) click that
+      // will start an extension on release — don't move the vertex yet.
+      const ref = wallEditRef.current;
+      if (!ref.moved) {
+        if (Math.hypot(e.clientX - ref.sx, e.clientY - ref.sy) < 4) return;
+        ref.moved = true;
+      }
       // Drag a vertex to the (grid-snapped) cursor and keep the endpoints in
       // sync with the first/last point.
       const g = mapGridSize || 50;
-      const idx = wallEditRef.current.index;
+      const idx = ref.index;
       const snapped = wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y };
       const pts = wallPoints(wallBend).map((pt, i) => (i === idx ? snapped : pt));
       setWallBend(withWallPoints(wallBend, pts));
@@ -1509,9 +1556,17 @@ export default function MapBoard() {
       return;
     }
     if (wallEditRef.current) {
+      const ref = wallEditRef.current;
       wallEditRef.current = null;
-      if (wallBend && currentSceneId) void updateWall(currentSceneId, wallBend);
+      const draft = wallBend;
       setWallBend(null);
+      if (ref.moved) {
+        // A real drag → commit the moved vertex.
+        if (draft && currentSceneId) void updateWall(currentSceneId, draft);
+      } else if (draft) {
+        // A click (no drag) on the vertex → start extending from it.
+        startExtend(draft, ref.index);
+      }
       return;
     }
     if (lightDragRef.current) {
@@ -1701,22 +1756,31 @@ export default function MapBoard() {
     () => wallSegments((walls ?? []).filter((w) => !(w.door && w.door.open))),
     [walls],
   );
-  // Begin dragging an existing vertex of a wall.
-  const onVertexDown = useCallback((wall: MapWall, index: number) => {
-    wallEditRef.current = { index };
+  // Press a vertex: pending until we know if it's a drag (move) or a click
+  // (start extending the wall from that vertex — see onMouseUp).
+  const onVertexDown = useCallback((wall: MapWall, index: number, e: React.MouseEvent) => {
+    wallEditRef.current = { index, sx: e.clientX, sy: e.clientY, moved: false };
+    setWallExtend(null);
     setWallBend(wall);
+  }, []);
+  // Click (not drag) on an endpoint vertex → start a connected extension from it.
+  const startExtend = useCallback((wall: MapWall, index: number) => {
+    const pts = wallPoints(wall);
+    if (index !== 0 && index !== pts.length - 1) return; // only endpoints extend
+    setWallExtend({ wallId: wall.id, end: index === 0 ? 'start' : 'end', cursor: pts[index] });
   }, []);
   // Drag a segment's midpoint handle: insert a new vertex there and drag it,
   // turning the wall into (or extending) a polyline. `segIndex` is the segment
   // between vertex segIndex and segIndex+1.
-  const onSegmentInsert = useCallback((wall: MapWall, segIndex: number) => {
+  const onSegmentInsert = useCallback((wall: MapWall, segIndex: number, e: React.MouseEvent) => {
     const pts = wallPoints(wall);
     const a = pts[segIndex];
     const b = pts[segIndex + 1];
     if (!a || !b) return;
     const at = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     const next = [...pts.slice(0, segIndex + 1), at, ...pts.slice(segIndex + 1)];
-    wallEditRef.current = { index: segIndex + 1 };
+    wallEditRef.current = { index: segIndex + 1, sx: e.clientX, sy: e.clientY, moved: true };
+    setWallExtend(null);
     setWallBend(withWallPoints(wall, next));
   }, []);
   // Remove a vertex (alt/right-click); no-op if it would leave fewer than two.
@@ -2503,7 +2567,9 @@ export default function MapBoard() {
               <div className="text-[11px] text-slate-500">
                 {doorEditMode
                   ? 'Click a wall to turn it into a doorway; click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
-                  : `Drag to draw a wall (${wallSnap ? 'snaps to the grid' : 'freehand'}). Click a wall to select it — Ctrl/Cmd+C / V to copy/paste, Delete to remove. Drag a yellow vertex to reshape; drag a segment’s midpoint dot to add a bend; alt/right-click a vertex to remove it. Double-click a wall to delete.`}
+                  : wallExtend
+                    ? 'Extending: click to drop each connected point; right-click or Esc to finish.'
+                    : `Drag to draw a wall (${wallSnap ? 'snaps to the grid' : 'freehand'}). Click an end vertex to continue the wall from it (drag a vertex to move). Drag a segment’s midpoint dot to add a bend; alt/right-click a vertex to remove it. Click a wall to select (Ctrl/Cmd+C/V copy-paste, Delete removes); double-click to delete.`}
               </div>
 
               {/* Per-door controls */}
@@ -2825,6 +2891,7 @@ export default function MapBoard() {
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
+            onContextMenu={wallExtend ? (e) => e.preventDefault() : undefined}
           >
             {/* Everything inside this <g> is in logical canvas coordinates.
                 All pan/zoom is handled by this single transform — tokens stored
@@ -2992,6 +3059,24 @@ export default function MapBoard() {
                   selectedId={selection?.kind === 'wall' ? selection.id : null}
                 />
               )}
+
+              {/* Rubber-band preview of a wall being extended from a vertex. */}
+              {isGM && wallExtend && (() => {
+                const wall = (currentScene?.walls ?? []).find((w) => w.id === wallExtend.wallId);
+                if (!wall) return null;
+                const pts = wallPoints(wall);
+                const anchor = wallExtend.end === 'end' ? pts[pts.length - 1] : pts[0];
+                return (
+                  <g pointerEvents="none">
+                    <line
+                      x1={anchor.x} y1={anchor.y} x2={wallExtend.cursor.x} y2={wallExtend.cursor.y}
+                      stroke="#fb7185" strokeWidth={3 / zoom} strokeLinecap="round"
+                      strokeDasharray={`${6 / zoom} ${4 / zoom}`}
+                    />
+                    <circle cx={wallExtend.cursor.x} cy={wallExtend.cursor.y} r={4 / zoom} fill="#fecdd3" />
+                  </g>
+                );
+              })()}
 
               {/* Doorways — visible to everyone (players see state + pass through
                   open doors). GM clicking a door toggles open/closed, or removes
