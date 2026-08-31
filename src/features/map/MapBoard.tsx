@@ -1308,6 +1308,26 @@ export default function MapBoard() {
     if (cells.length) paintFogLocal(currentSceneId, cells, fogMode === 'reveal');
   };
 
+  // Nearest endpoint (first/last vertex) of any plain wall within `radius` of p.
+  const nearestWallEndpoint = (
+    p: { x: number; y: number },
+    radius: number,
+  ): { wallId: string; end: 'start' | 'end'; point: { x: number; y: number } } | null => {
+    let best: { wallId: string; end: 'start' | 'end'; point: { x: number; y: number } } | null = null;
+    let bestD = radius;
+    for (const w of currentScene?.walls ?? []) {
+      if (w.door) continue;
+      const pts = wallPoints(w);
+      const ends: [number, 'start' | 'end'][] = [[0, 'start'], [pts.length - 1, 'end']];
+      for (const [idx, end] of ends) {
+        const pt = pts[idx];
+        const d = Math.hypot(pt.x - p.x, pt.y - p.y);
+        if (d < bestD) { bestD = d; best = { wallId: w.id, end, point: pt }; }
+      }
+    }
+    return best;
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (draggingTokenId) return;
     if (!campaignId) return;
@@ -1415,6 +1435,14 @@ export default function MapBoard() {
     }
     if (tool === 'wall') {
       const g = mapGridSize || 50;
+      // Starting on (or near) an existing wall's endpoint continues THAT wall
+      // rather than drawing a new one — so you don't have to hit the tiny
+      // vertex handle exactly to connect.
+      const near = nearestWallEndpoint(p, Math.max(16 / zoom, g * 0.4));
+      if (near) {
+        setWallExtend({ wallId: near.wallId, end: near.end, cursor: near.point });
+        return;
+      }
       setDrafting(wallSnap ? { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g } : { x: p.x, y: p.y });
       return;
     }
