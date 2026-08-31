@@ -101,6 +101,47 @@ export function wallSegments(walls: CurveWall[]): Seg[] {
   return walls.flatMap((w) => tessellateWall(w));
 }
 
+/**
+ * Like wallSegments, but first snaps each wall's OUTER endpoints (first/last
+ * vertex) to any nearby outer endpoint of another wall, within `tol`. Touching
+ * walls and doorways then share an exact point, so there's no token-sized gap
+ * at a junction for sight or movement to slip through. Internal polyline
+ * vertices and curve samples are untouched, and the authored geometry isn't
+ * modified — this only affects the derived collision/sight segments.
+ */
+export function weldedWallSegments(walls: CurveWall[], tol: number): Seg[] {
+  const reps: Vec[] = [];
+  const repOf = (p: Vec): Vec => {
+    for (const r of reps) if (Math.hypot(r.x - p.x, r.y - p.y) <= tol) return r;
+    const r = { x: p.x, y: p.y };
+    reps.push(r);
+    return r;
+  };
+  // Pre-register every outer endpoint so representatives are order-stable.
+  for (const w of walls) {
+    const pts = wallPoints(w);
+    repOf(pts[0]);
+    repOf(pts[pts.length - 1]);
+  }
+  const out: Seg[] = [];
+  for (const w of walls) {
+    if (isPolyline(w) || isStraightWall(w)) {
+      const pts = wallPoints(w).map((p) => ({ x: p.x, y: p.y }));
+      pts[0] = repOf(pts[0]);
+      pts[pts.length - 1] = repOf(pts[pts.length - 1]);
+      for (let i = 0; i < pts.length - 1; i++) {
+        out.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y });
+      }
+    } else {
+      // Legacy bezier: weld its two endpoints, then sample the arc between them.
+      const a = repOf({ x: w.x1, y: w.y1 });
+      const b = repOf({ x: w.x2, y: w.y2 });
+      for (const s of tessellateWall({ ...w, x1: a.x, y1: a.y, x2: b.x, y2: b.y })) out.push(s);
+    }
+  }
+  return out;
+}
+
 /** SVG path `d` for a wall — a polyline, a straight line, or a quadratic arc. */
 export function wallPath(w: CurveWall): string {
   if (isPolyline(w)) {

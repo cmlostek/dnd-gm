@@ -13,7 +13,7 @@ import DoorsLayer, { type DoorHover } from './canvas/layers/DoorsLayer';
 import LightsLayer from './canvas/layers/LightsLayer';
 import type { LightArea } from './canvas/layers/FogLayer';
 import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
-import { wallSegments, wallPoints, withWallPoints, resolveMovement } from './vision/walls';
+import { weldedWallSegments, wallPoints, withWallPoints, resolveMovement } from './vision/walls';
 import { DEFAULT_LIGHT_RADIUS, type MapWall } from './mapStore';
 import type { LayerDrag, LayerDragPos, ShapeDrag, ShapeDragPos, TokenResize, TokenResizePos } from './canvas/types';
 import { hpBarClass, hpPercent } from '../hpBar';
@@ -1816,10 +1816,12 @@ export default function MapBoard() {
   const doors = useMemo(() => (walls ?? []).filter((w) => !!w.door), [walls]);
   // Tessellated wall segments (curves sampled to lines) — one source for both
   // line of sight and token collision. An OPEN door is omitted so sight and
-  // movement both flow through it; closed and locked doors still block.
+  // movement both flow through it; closed and locked doors still block. Outer
+  // endpoints are welded (within ~0.5 cell) so a door meets its flanking walls
+  // with no token-sized gap for sight/movement to leak through.
   const wallSegs = useMemo(
-    () => wallSegments((walls ?? []).filter((w) => !(w.door && w.door.open))),
-    [walls],
+    () => weldedWallSegments((walls ?? []).filter((w) => !(w.door && w.door.open)), (mapGridSize || 50) * 0.5),
+    [walls, mapGridSize],
   );
   // Press a vertex: pending until we know if it's a drag (move) or a click
   // (start extending the wall from that vertex — see onMouseUp).

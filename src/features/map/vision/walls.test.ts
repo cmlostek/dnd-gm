@@ -3,6 +3,7 @@ import {
   isStraightWall,
   tessellateWall,
   wallSegments,
+  weldedWallSegments,
   wallPath,
   resolveMovement,
   type CurveWall,
@@ -64,6 +65,42 @@ describe('wallSegments / wallPath', () => {
   it('emits a line path for straight and a Q path for curved', () => {
     expect(wallPath({ x1: 0, y1: 0, x2: 10, y2: 0 })).toContain('L');
     expect(wallPath({ x1: 0, y1: 0, x2: 10, y2: 0, cx: 5, cy: 9 })).toContain('Q');
+  });
+});
+
+describe('weldedWallSegments', () => {
+  it('snaps a nearby door endpoint to the flanking wall, closing the gap', () => {
+    // A wall ending at (10,0) and a "door" starting at (12,0) — a 2-unit gap.
+    const walls: CurveWall[] = [
+      { x1: 0, y1: 0, x2: 10, y2: 0 },
+      { x1: 12, y1: 0, x2: 22, y2: 0 },
+    ];
+    const segs = weldedWallSegments(walls, 5); // tol 5 > gap 2 → weld
+    // The door's start is pulled onto the wall's end (10,0): no gap remains.
+    const door = segs[1];
+    expect(door.x1).toBe(10);
+    expect(door.y1).toBe(0);
+  });
+
+  it('leaves genuinely separate walls untouched when beyond tolerance', () => {
+    const walls: CurveWall[] = [
+      { x1: 0, y1: 0, x2: 10, y2: 0 },
+      { x1: 40, y1: 0, x2: 50, y2: 0 },
+    ];
+    const segs = weldedWallSegments(walls, 5); // gap 30 >> tol → no weld
+    expect(segs[1].x1).toBe(40);
+  });
+
+  it('welds only outer endpoints, leaving interior polyline vertices intact', () => {
+    const walls: CurveWall[] = [
+      { x1: 0, y1: 0, x2: 20, y2: 0, points: [{ x: 0, y: 0 }, { x: 10, y: 3 }, { x: 20, y: 0 }] },
+      { x1: 21, y1: 0, x2: 30, y2: 0 },
+    ];
+    const segs = weldedWallSegments(walls, 3);
+    // Interior vertex (10,3) preserved on the polyline's first segment.
+    expect(segs[0]).toEqual({ x1: 0, y1: 0, x2: 10, y2: 3 });
+    // Second wall's start snapped from 21 → 20 (the polyline's welded end).
+    expect(segs[2].x1).toBe(20);
   });
 });
 
