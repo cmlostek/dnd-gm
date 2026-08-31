@@ -115,6 +115,21 @@ export const DEFAULT_LIGHT_RADIUS = 150;
  * feeds the line-of-sight computation. Structurally a visibility `Seg` plus an
  * id. Stored in scene.data — tiny (four numbers), so no realtime-size concern.
  */
+/**
+ * A doorway carried on a wall segment. GM-controlled (map_scenes is GM-writable
+ * only): the GM opens/closes/locks it; players see its state and can pass
+ * through it when open. An open door is excluded from the sight/collision
+ * segments, so line-of-sight and token movement both flow through it.
+ */
+export type MapDoor = {
+  /** Open → passable + see-through (rendered dashed). Closed → blocks (solid). */
+  open: boolean;
+  /** Locked doors can't be opened from the canvas without unlocking first. */
+  locked: boolean;
+  /** Building/room label shown on hover. */
+  name?: string;
+};
+
 export type MapWall = {
   id: string;
   x1: number;
@@ -125,6 +140,8 @@ export type MapWall = {
    *  Absent or on the midpoint = straight. */
   cx?: number;
   cy?: number;
+  /** When set, this wall is a doorway (see MapDoor). Absent = plain wall. */
+  door?: MapDoor;
 };
 
 type SceneData = {

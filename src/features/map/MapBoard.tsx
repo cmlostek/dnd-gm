@@ -8,6 +8,7 @@ import ShapesLayer from './canvas/layers/ShapesLayer';
 import TokensLayer from './canvas/layers/TokensLayer';
 import FogLayer from './canvas/layers/FogLayer';
 import WallsLayer from './canvas/layers/WallsLayer';
+import DoorsLayer from './canvas/layers/DoorsLayer';
 import LightsLayer from './canvas/layers/LightsLayer';
 import type { LightArea } from './canvas/layers/FogLayer';
 import { computeVisibility, cellsInVision, type Vec } from './vision/visibility';
@@ -60,9 +61,35 @@ import {
   Cloud,
   BrickWall,
   Lightbulb,
+  DoorOpen,
+  DoorClosed,
+  Lock,
+  LockOpen,
 } from 'lucide-react';
 
 type Tool = 'select' | 'ruler' | 'circle' | 'square' | 'cone' | 'token' | 'ping' | 'edit' | 'fog' | 'wall' | 'light';
+
+// The map's controls are grouped into tabs; picking a tab shows that group's
+// editable controls (its "context panel") and selects a sensible default tool.
+type PanelTab = 'select' | 'shapes' | 'fog' | 'walls' | 'lights';
+/** Which tab a given tool belongs under (drives the active-tab highlight). */
+function tabForTool(t: Tool): PanelTab {
+  if (t === 'circle' || t === 'square' || t === 'cone') return 'shapes';
+  if (t === 'fog') return 'fog';
+  if (t === 'wall') return 'walls';
+  if (t === 'light') return 'lights';
+  return 'select';
+}
+/** The default tool to activate when a tab is opened. */
+function toolForTab(tab: PanelTab): Tool {
+  switch (tab) {
+    case 'shapes': return 'circle';
+    case 'fog': return 'fog';
+    case 'walls': return 'wall';
+    case 'lights': return 'light';
+    default: return 'select';
+  }
+}
 
 type Ping = { id: string; x: number; y: number; color: string };
 type Presence = { user_id: string; display_name: string; role: 'gm' | 'player' };
@@ -521,6 +548,10 @@ export default function MapBoard() {
   const [tokenResize, setTokenResize] = useState<TokenResize | null>(null);
   const [tokenResizePos, setTokenResizePos] = useState<TokenResizePos | null>(null);
   const [selectedShapeColor, setSelectedShapeColor] = useState(SHAPE_COLORS[0]);
+  // Which controls tab is showing in the sidebar, and (within the Walls tab)
+  // whether clicking a wall converts it to/from a doorway.
+  const [panelTab, setPanelTab] = useState<PanelTab>('select');
+  const [doorEditMode, setDoorEditMode] = useState(false);
   const [tokenName, setTokenName] = useState('');
   const [tokenEmoji, setTokenEmoji] = useState('');
   // Optional creature template — when set, the next placed token seeds
@@ -1534,14 +1565,46 @@ export default function MapBoard() {
   const fogEnabled = currentScene?.fog.enabled ?? false;
   const sceneFogMode = currentScene?.fog.mode ?? 'manual';
   const walls = currentScene?.walls;
+  // Plain sight-blockers vs doorways. Doors render for everyone (players see
+  // and pass through them); plain walls stay GM-only.
+  const plainWalls = useMemo(() => (walls ?? []).filter((w) => !w.door), [walls]);
+  const doors = useMemo(() => (walls ?? []).filter((w) => !!w.door), [walls]);
   // Tessellated wall segments (curves sampled to lines) — one source for both
-  // line of sight and token collision.
-  const wallSegs = useMemo(() => wallSegments(walls ?? []), [walls]);
+  // line of sight and token collision. An OPEN door is omitted so sight and
+  // movement both flow through it; closed and locked doors still block.
+  const wallSegs = useMemo(
+    () => wallSegments((walls ?? []).filter((w) => !(w.door && w.door.open))),
+    [walls],
+  );
   // Begin dragging a wall's midpoint handle to bend it into a curve.
   const onBendStart = useCallback((wall: MapWall) => {
     wallBendRef.current = true;
     setWallBend(wall);
   }, []);
+
+  // ── Doorway helpers (GM only; map_scenes is GM-writable) ──────────────────
+  const wallById = useCallback(
+    (id: string) => (currentScene?.walls ?? []).find((w) => w.id === id) ?? null,
+    [currentScene],
+  );
+  /** Turn a plain wall into a closed, unlocked doorway (or revert it). */
+  const setWallIsDoor = useCallback((id: string, isDoor: boolean) => {
+    const w = wallById(id);
+    if (!w || !currentSceneId) return;
+    if (isDoor && !w.door) void updateWall(currentSceneId, { ...w, door: { open: false, locked: false } });
+    else if (!isDoor && w.door) { const { door: _drop, ...rest } = w; void updateWall(currentSceneId, rest); }
+  }, [wallById, currentSceneId, updateWall]);
+  const patchDoor = useCallback((id: string, patch: Partial<NonNullable<MapWall['door']>>) => {
+    const w = wallById(id);
+    if (!w || !w.door || !currentSceneId) return;
+    void updateWall(currentSceneId, { ...w, door: { ...w.door, ...patch } });
+  }, [wallById, currentSceneId, updateWall]);
+  /** Canvas click on a door: toggle open/closed (locked doors don't budge). */
+  const toggleDoorOpen = useCallback((id: string) => {
+    const w = wallById(id);
+    if (!w || !w.door || w.door.locked) return;
+    patchDoor(id, { open: !w.door.open });
+  }, [wallById, patchDoor]);
   const visionPolys = useMemo<Vec[][]>(() => {
     if (!fogEnabled || sceneFogMode !== 'dynamic') return [];
     const origins = tokens.filter((t) => {
@@ -1650,6 +1713,33 @@ export default function MapBoard() {
         }`}
       >
         <Icon size={16} />
+      </button>
+    );
+  };
+
+  // Open a controls tab. Switching groups activates that group's default tool;
+  // re-clicking the current group leaves the active sub-tool alone.
+  const selectTab = (tab: PanelTab) => {
+    setPanelTab(tab);
+    if (tabForTool(tool) !== tab) { setTool(toolForTab(tab)); setRuler(null); }
+  };
+
+  // A tab button in the sidebar's grouped controls bar.
+  const tabButton = (tab: PanelTab, Icon: React.ComponentType<{ size?: number }>, label: string, gmOnly = false) => {
+    if (gmOnly && !isGM) return null;
+    const active = panelTab === tab;
+    return (
+      <button
+        onClick={() => selectTab(tab)}
+        title={label}
+        className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded text-[10px] border ${
+          active
+            ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+            : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+        }`}
+      >
+        <Icon size={15} />
+        {label}
       </button>
     );
   };
@@ -1835,21 +1925,37 @@ export default function MapBoard() {
           )}
 
           <div>
-            <div className="text-xs uppercase tracking-wider text-slate-500 mb-2">Tools</div>
-            <div className="grid grid-cols-3 gap-1">
-              {toolButton('select', MousePointer2, 'Select — drag tokens and shapes')}
-              {toolButton('ping', Radio, 'Ping — click to flash a marker for everyone')}
-              {toolButton('ruler', Ruler, 'Ruler (5 ft/cell)')}
-              {toolButton('token', User, isGM ? 'Place token' : 'Place your character token')}
-              {toolButton('edit', Layers, 'Edit images & tokens — drag to move, corner to resize', true)}
-              {toolButton('circle', CircleIcon, 'Circle AoE', true)}
-              {toolButton('square', SquareIcon, 'Square AoE', true)}
-              {toolButton('cone', Triangle, 'Cone AoE', true)}
-              {toolButton('fog', Cloud, 'Fog of war — paint to reveal/hide for players', true)}
-              {toolButton('wall', BrickWall, 'Walls — draw sight blockers (players never see them)', true)}
-              {toolButton('light', Lightbulb, 'Lights — click to place; needed to see in a dark scene', true)}
+            {/* ── Grouped controls: a tab bar; each tab reveals its own panel ── */}
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-2">Map controls</div>
+            <div className="flex gap-1">
+              {tabButton('select', MousePointer2, 'Play')}
+              {tabButton('shapes', CircleIcon, 'Shapes', true)}
+              {tabButton('fog', Cloud, 'Fog', true)}
+              {tabButton('walls', BrickWall, 'Walls', true)}
+              {tabButton('lights', Lightbulb, 'Lights', true)}
             </div>
-            <div className="flex gap-1 mt-1">
+
+            {/* Play tab: the interaction sub-tools everyone shares. */}
+            {panelTab === 'select' && (
+              <div className="mt-2 grid grid-cols-3 gap-1">
+                {toolButton('select', MousePointer2, 'Select — drag tokens and shapes')}
+                {toolButton('ping', Radio, 'Ping — click to flash a marker for everyone')}
+                {toolButton('ruler', Ruler, 'Ruler (5 ft/cell)')}
+                {toolButton('token', User, isGM ? 'Place token' : 'Place your character token')}
+                {toolButton('edit', Layers, 'Edit images & tokens — drag to move, corner to resize', true)}
+              </div>
+            )}
+
+            {/* Shapes tab: AoE sub-tools (colour picker lives in its own panel below). */}
+            {panelTab === 'shapes' && isGM && (
+              <div className="mt-2 grid grid-cols-3 gap-1">
+                {toolButton('circle', CircleIcon, 'Circle AoE', true)}
+                {toolButton('square', SquareIcon, 'Square AoE', true)}
+                {toolButton('cone', Triangle, 'Cone AoE', true)}
+              </div>
+            )}
+
+            <div className="flex gap-1 mt-2">
               <button
                 onClick={fitToScreen}
                 title="Fit map to screen"
@@ -2023,7 +2129,7 @@ export default function MapBoard() {
             </div>
           )}
 
-          {isGM && (tool === 'circle' || tool === 'square' || tool === 'cone') && (
+          {isGM && panelTab === 'shapes' && (
             <div>
               <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Shape color</div>
               <div className="flex flex-wrap gap-1">
@@ -2041,7 +2147,7 @@ export default function MapBoard() {
             </div>
           )}
 
-          {isGM && tool === 'fog' && currentScene && (
+          {isGM && panelTab === 'fog' && currentScene && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wider text-slate-500">Fog of war</div>
@@ -2146,27 +2252,105 @@ export default function MapBoard() {
             </div>
           )}
 
-          {isGM && tool === 'wall' && currentScene && (
+          {isGM && panelTab === 'walls' && currentScene && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <div className="text-xs uppercase tracking-wider text-slate-500">Walls</div>
-                <span className="text-[11px] text-slate-500 font-mono">{currentScene.walls.length}</span>
+                <div className="text-xs uppercase tracking-wider text-slate-500">Walls & doors</div>
+                <span className="text-[11px] text-slate-500 font-mono">
+                  {plainWalls.length}w · {doors.length}d
+                </span>
               </div>
+
+              {/* Draw walls vs. assign doorways */}
+              <div className="flex rounded overflow-hidden border border-slate-800">
+                {([['draw', 'Draw walls'], ['doors', 'Edit doors']] as const).map(([m, label]) => {
+                  const on = m === 'doors' ? doorEditMode : !doorEditMode;
+                  return (
+                    <button
+                      key={m}
+                      onClick={() => setDoorEditMode(m === 'doors')}
+                      className={`flex-1 py-1 text-[11px] ${
+                        on ? 'bg-slate-800 text-slate-100' : 'bg-slate-900 text-slate-400 hover:bg-slate-800/60'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+
               <div className="text-[11px] text-slate-500">
-                Drag to draw a sight-blocking wall (snaps to the grid). Double-click a wall to delete. Players never see walls — they only feel them through line of sight.
+                {doorEditMode
+                  ? 'Click a wall to turn it into a doorway; click a doorway to turn it back. Set each door’s name and lock below. Players see doors and can pass through open ones.'
+                  : 'Drag to draw a sight-blocking wall (snaps to the grid). Double-click a wall to delete. Players never see plain walls — only their effect on line of sight.'}
               </div>
+
+              {/* Per-door controls */}
+              {doors.length > 0 && (
+                <div className="space-y-1.5 border-t border-slate-800 pt-2">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-600">Doors</div>
+                  {doors.map((w, i) => {
+                    const d = w.door!;
+                    return (
+                      <div key={w.id} className="bg-slate-900 border border-slate-800 rounded p-1.5 space-y-1">
+                        <input
+                          value={d.name ?? ''}
+                          onChange={(e) => patchDoor(w.id, { name: e.target.value })}
+                          placeholder={`Door ${i + 1} name`}
+                          className="w-full bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[11px] text-slate-200 outline-none focus:border-sky-700"
+                        />
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => patchDoor(w.id, { open: !d.open })}
+                            disabled={d.locked}
+                            title={d.locked ? 'Unlock to open' : d.open ? 'Close door' : 'Open door'}
+                            className={`flex-1 py-0.5 text-[10px] rounded border flex items-center justify-center gap-1 disabled:opacity-40 ${
+                              d.open
+                                ? 'bg-emerald-900/40 border-emerald-700 text-emerald-200'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                            }`}
+                          >
+                            {d.open ? <DoorOpen size={11} /> : <DoorClosed size={11} />}
+                            {d.open ? 'Open' : 'Closed'}
+                          </button>
+                          <button
+                            onClick={() => patchDoor(w.id, { locked: !d.locked })}
+                            title={d.locked ? 'Unlock' : 'Lock'}
+                            className={`flex-1 py-0.5 text-[10px] rounded border flex items-center justify-center gap-1 ${
+                              d.locked
+                                ? 'bg-rose-900/40 border-rose-700 text-rose-200'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                            }`}
+                          >
+                            {d.locked ? <Lock size={11} /> : <LockOpen size={11} />}
+                            {d.locked ? 'Locked' : 'Unlocked'}
+                          </button>
+                          <button
+                            onClick={() => setWallIsDoor(w.id, false)}
+                            title="Remove doorway (back to a plain wall)"
+                            className="px-1.5 py-0.5 text-[10px] rounded border border-slate-800 text-slate-500 hover:text-rose-300 hover:bg-slate-800"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               {currentScene.walls.length > 0 && (
                 <button
                   onClick={() => currentSceneId && void clearWalls(currentSceneId)}
                   className="w-full py-1 text-[11px] rounded border border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                 >
-                  Clear all walls
+                  Clear all walls &amp; doors
                 </button>
               )}
             </div>
           )}
 
-          {isGM && tool === 'light' && currentScene && (
+          {isGM && panelTab === 'lights' && currentScene && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wider text-slate-500">Lights</div>
@@ -2525,18 +2709,35 @@ export default function MapBoard() {
                 />
               )}
 
-              {/* Walls — GM only, above fog so they stay visible while editing */}
+              {/* Plain walls — GM only, above fog so they stay visible while editing */}
               {isGM && currentScene && (
                 <WallsLayer
                   walls={wallBend
-                    ? (currentScene.walls ?? []).map((w) => (w.id === wallBend.id ? wallBend : w))
-                    : currentScene.walls}
+                    ? plainWalls.map((w) => (w.id === wallBend.id ? wallBend : w))
+                    : plainWalls}
                   zoom={zoom}
                   showHandles={tool === 'wall'}
                   draftStart={tool === 'wall' ? drafting : null}
                   draftEnd={tool === 'wall' ? draftEnd : null}
                   onRemoveWall={currentSceneId ? (id) => void removeWall(currentSceneId, id) : undefined}
                   onBendStart={onBendStart}
+                  onWallClick={doorEditMode && panelTab === 'walls' ? (id) => setWallIsDoor(id, true) : undefined}
+                />
+              )}
+
+              {/* Doorways — visible to everyone (players see state + pass through
+                  open doors). GM clicking a door toggles open/closed, or removes
+                  the doorway while in door-edit mode. */}
+              {currentScene && doors.length > 0 && (
+                <DoorsLayer
+                  doors={wallBend ? doors.map((w) => (w.id === wallBend.id ? wallBend : w)) : doors}
+                  zoom={zoom}
+                  isGM={isGM}
+                  onToggleOpen={
+                    isGM
+                      ? (doorEditMode && panelTab === 'walls' ? (id) => setWallIsDoor(id, false) : toggleDoorOpen)
+                      : undefined
+                  }
                 />
               )}
 

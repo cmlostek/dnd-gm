@@ -20,6 +20,7 @@ export default function WallsLayer({
   draftEnd,
   onRemoveWall,
   onBendStart,
+  onWallClick,
 }: {
   walls: MapWall[];
   zoom: number;
@@ -29,6 +30,8 @@ export default function WallsLayer({
   draftEnd: Pt | null;
   onRemoveWall?: (id: string) => void;
   onBendStart?: (wall: MapWall, e: React.MouseEvent) => void;
+  /** Single-click a wall (used by door-edit mode to convert it to a doorway). */
+  onWallClick?: (id: string) => void;
 }) {
   const stroke = 3 / zoom;
   const dot = 4 / zoom;
@@ -46,7 +49,8 @@ export default function WallsLayer({
               stroke="transparent"
               strokeWidth={Math.max(stroke * 4, 12 / zoom)}
               strokeLinecap="round"
-              style={{ cursor: onRemoveWall ? 'pointer' : 'default' }}
+              style={{ cursor: onWallClick || onRemoveWall ? 'pointer' : 'default' }}
+              onClick={onWallClick ? () => onWallClick(w.id) : undefined}
               onDoubleClick={onRemoveWall ? () => onRemoveWall(w.id) : undefined}
             />
             <path
