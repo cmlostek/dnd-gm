@@ -3125,6 +3125,19 @@ export default function MapBoard() {
                 />
               )}
 
+              {/* Plain walls — read-only grey lines for players (no dots/handles). */}
+              {!isGM && currentScene && plainWalls.length > 0 && (
+                <WallsLayer
+                  walls={plainWalls}
+                  zoom={zoom}
+                  showHandles={false}
+                  draftStart={null}
+                  draftEnd={null}
+                  stroke="#94a3b8"
+                  showEndpoints={false}
+                />
+              )}
+
               {/* Rubber-band preview of a wall being extended from a vertex. */}
               {isGM && wallExtend && (() => {
                 const wall = (currentScene?.walls ?? []).find((w) => w.id === wallExtend.wallId);

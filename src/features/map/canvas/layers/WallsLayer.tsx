@@ -25,6 +25,8 @@ export default function WallsLayer({
   onSegmentInsert,
   onVertexRemove,
   selectedId,
+  stroke = '#fb7185',
+  showEndpoints = true,
 }: {
   walls: MapWall[];
   zoom: number;
@@ -43,8 +45,12 @@ export default function WallsLayer({
   onVertexRemove?: (wall: MapWall, index: number) => void;
   /** Id of the currently-selected wall (drawn with a highlight). */
   selectedId?: string | null;
+  /** Line colour (GM red by default; players get grey). */
+  stroke?: string;
+  /** Draw the small endpoint dots (off for the read-only player view). */
+  showEndpoints?: boolean;
 }) {
-  const stroke = 3 / zoom;
+  const strokeW = 3 / zoom;
   const dot = 4 / zoom;
   const handleR = 5 / zoom;
   const midR = 3.5 / zoom;
@@ -61,7 +67,7 @@ export default function WallsLayer({
                 d={wallPath(w)}
                 fill="none"
                 stroke="#38bdf8"
-                strokeWidth={stroke * 3}
+                strokeWidth={strokeW * 3}
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeOpacity={0.4}
@@ -73,7 +79,7 @@ export default function WallsLayer({
               d={wallPath(w)}
               fill="none"
               stroke="transparent"
-              strokeWidth={Math.max(stroke * 4, 12 / zoom)}
+              strokeWidth={Math.max(strokeW * 4, 12 / zoom)}
               strokeLinecap="round"
               strokeLinejoin="round"
               style={{ cursor: onWallClick || onRemoveWall ? 'pointer' : 'default' }}
@@ -83,14 +89,14 @@ export default function WallsLayer({
             <path
               d={wallPath(w)}
               fill="none"
-              stroke="#fb7185"
-              strokeWidth={stroke}
+              stroke={stroke}
+              strokeWidth={strokeW}
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeOpacity={0.85}
               pointerEvents="none"
             />
-            {!showHandles &&
+            {showEndpoints && !showHandles &&
               pts.map((p, i) => (
                 <circle key={i} cx={p.x} cy={p.y} r={dot} fill="#fecdd3" pointerEvents="none" />
               ))}
@@ -151,7 +157,7 @@ export default function WallsLayer({
         <line
           x1={draftStart.x} y1={draftStart.y} x2={draftEnd.x} y2={draftEnd.y}
           stroke="#fb7185"
-          strokeWidth={stroke}
+          strokeWidth={strokeW}
           strokeLinecap="round"
           strokeDasharray={`${6 / zoom} ${4 / zoom}`}
           pointerEvents="none"
